@@ -1921,6 +1921,19 @@ def workflow_add(
             f"({_escape_markup(definition.id)}) installed"
         )
 
+    # Bundled workflows are available offline to every installed Spec Kit
+    # distribution. Resolve these before consulting a remote catalog so an
+    # installed package can add its own workflows without network access.
+    if not dev and from_url is None:
+        from .._assets import _locate_bundled_workflow
+
+        bundled_workflow = _locate_bundled_workflow(source)
+        if bundled_workflow is not None:
+            _validate_and_install_local(
+                bundled_workflow / "workflow.yml", f"bundled:{source}", expected_id=source
+            )
+            return
+
     # Explicit local install (mirrors `extension add --dev`). --dev takes
     # precedence over --from so a URL that would be ignored is never fetched.
     if dev:

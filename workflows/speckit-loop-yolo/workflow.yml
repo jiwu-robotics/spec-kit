@@ -1,0 +1,95 @@
+schema_version: "1.0"
+workflow:
+  id: "speckit-loop-yolo"
+  name: "No-Gates Spec Kit Loop"
+  version: "1.0.0"
+  author: "jiwu-robotics"
+  description: "Runs SDD without human gates while retaining bounded independent loop verification."
+  state_observer:
+    type: loop-state
+    variant: yolo
+
+requires:
+  speckit_version: ">=1.0.2.dev0"
+  integrations:
+    any: ["codex"]
+
+inputs:
+  spec:
+    type: string
+    required: true
+    prompt: "Describe the feature to build"
+  integration:
+    type: string
+    default: "auto"
+    enum: ["auto", "codex"]
+    prompt: "Integration to use; auto resolves the initialized integration"
+  remediation_note:
+    type: string
+    default: ""
+    prompt: "Required corrective-work note when resuming a failed stage"
+
+steps:
+  - id: validate-input
+    type: loop-state
+    action: validate-input
+    variant: yolo
+
+  - id: specify
+    command: speckit.specify
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: plan
+    command: speckit.plan
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: tasks
+    command: speckit.tasks
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: initialize-loop-state
+    type: loop-state
+    action: initialize
+    variant: yolo
+
+  - id: define-loop
+    command: speckit.loop.define
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: repeat-maker-check
+    type: do-while
+    condition: "{{ steps.evaluate-loop.output.next_action == 'maker' }}"
+    max_iterations: 8
+    steps:
+      - id: maker-loop
+        command: speckit.loop.run
+        integration: "{{ inputs.integration }}"
+      - id: checker-loop
+        command: speckit.loop.check
+        integration: "{{ inputs.integration }}"
+      - id: evaluate-loop
+        type: loop-state
+        action: evaluate
+        variant: yolo
+
+  - id: route-loop-outcome
+    type: switch
+    expression: "{{ steps.evaluate-loop.output.next_action }}"
+    cases:
+      none:
+        - id: guard-loop
+          command: speckit.loop.guard
+          integration: "{{ inputs.integration }}"
+    default:
+      - id: enforce-loop-outcome
+        type: loop-state
+        action: enforce
+        variant: yolo

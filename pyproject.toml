@@ -45,8 +45,11 @@ packages = ["src/specify_cli"]
 "extensions/agent-context" = "specify_cli/core_pack/extensions/agent-context"
 "extensions/assess" = "specify_cli/core_pack/extensions/assess"
 "extensions/bug" = "specify_cli/core_pack/extensions/bug"
+"extensions/loop" = "specify_cli/core_pack/extensions/loop"
 # Bundled workflows (auto-installed during `specify init`)
 "workflows/speckit" = "specify_cli/core_pack/workflows/speckit"
+"workflows/speckit-loop" = "specify_cli/core_pack/workflows/speckit-loop"
+"workflows/speckit-loop-yolo" = "specify_cli/core_pack/workflows/speckit-loop-yolo"
 # Bundled presets (installable via `specify preset add <name>` or `specify init --preset <name>`)
 "presets/lean" = "specify_cli/core_pack/presets/lean"
 "presets/constitution-sync" = "specify_cli/core_pack/presets/constitution-sync"
