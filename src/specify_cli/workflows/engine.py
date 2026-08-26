@@ -29,7 +29,7 @@ from ..integration_state import (
     try_read_integration_json,
 )
 from .base import RunStatus, StepContext, StepResult, StepStatus
-
+from .lease import RunLease, RunLeaseLostError, RunLeaseManager
 
 # -- Workflow Definition --------------------------------------------------
 
@@ -703,6 +703,12 @@ class RunState:
         self.updated_at = self.created_at
         self.log_entries: list[dict[str, Any]] = []
         self.error: str | None = None
+        # The active process installs a guard here before it persists RUNNING.
+        # Every subsequent state save checks the owner nonce, preventing a
+        # previously-stale process from overwriting a newly-reclaimed run.
+        self._execution_lease_guard: Any = None
+        self.active_resumer: dict[str, Any] | None = None
+        self.lease_history: list[dict[str, Any]] = []
 
     @property
     def runs_dir(self) -> Path:
@@ -730,6 +736,21 @@ class RunState:
             if step_id in self.step_results:
                 self.step_results[step_id]["output"] = output
 
+    def set_execution_lease_guard(self, guard: Any) -> None:
+        """Require *guard* to approve every state write while a run is active."""
+        with self._lock:
+            self._execution_lease_guard = guard
+
+    def clear_execution_lease_guard(self) -> None:
+        """Allow final state cleanup after this process released its lease."""
+        with self._lock:
+            self._execution_lease_guard = None
+
+    def record_lease_event(self, event: dict[str, Any]) -> None:
+        """Record an auditable ownership transition in persisted run state."""
+        with self._lock:
+            self.lease_history.append(event)
+
     def save(self) -> None:
         """Persist current state to disk.
 
@@ -742,6 +763,8 @@ class RunState:
         runs_dir.mkdir(parents=True, exist_ok=True)
 
         with self._lock:
+            if self._execution_lease_guard is not None:
+                self._execution_lease_guard()
             # Stamp updated_at inside the lock so the timestamp matches the
             # snapshot this thread serializes (concurrent savers don't race it).
             self.updated_at = datetime.now(timezone.utc).isoformat()
@@ -758,6 +781,8 @@ class RunState:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "error": self.error,
+                "active_resumer": self.active_resumer,
+                "lease_history": self.lease_history,
             }
             self._atomic_write_json(runs_dir / "state.json", state_data)
             self._atomic_write_json(runs_dir / "inputs.json", {"inputs": self.inputs})
@@ -858,6 +883,14 @@ class RunState:
         state.created_at = state_data.get("created_at", "")
         state.updated_at = state_data.get("updated_at", "")
         state.error = state_data.get("error")
+        active_resumer = state_data.get("active_resumer")
+        if active_resumer is not None and not isinstance(active_resumer, dict):
+            raise ValueError("Invalid run state: 'active_resumer' must be an object or null")
+        lease_history = state_data.get("lease_history", [])
+        if not isinstance(lease_history, list):
+            raise ValueError("Invalid run state: 'lease_history' must be a list")
+        state.active_resumer = active_resumer
+        state.lease_history = lease_history
 
         inputs_path = runs_dir / "inputs.json"
         if inputs_path.exists():
@@ -904,6 +937,55 @@ class WorkflowEngine:
         # callback's output (the CLI sets it to a console.print lambda). Uncontended
         # for sequential runs.
         self._callback_lock = threading.Lock()
+
+    @staticmethod
+    def _claim_execution_lease(
+        state: RunState, *, recovery_reason: str | None = None
+    ) -> RunLease:
+        """Claim a run before its state can transition to ``running``.
+
+        The guard is installed before the first state write.  If a stale owner
+        wakes after an explicitly-authorized recovery, its next ``save()``
+        fails instead of overwriting the new owner's state.
+        """
+        lease = RunLeaseManager(state.runs_dir).acquire(
+            recovery_reason=recovery_reason
+        )
+        state.set_execution_lease_guard(lease.assert_owned)
+        state.active_resumer = dict(lease.record)
+        state.record_lease_event(
+            {
+                "event": "lease_reclaimed" if lease.recovered_lease else "lease_acquired",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "owner_nonce": lease.owner_nonce,
+                "recovered_owner_nonce": (
+                    lease.recovered_lease.get("owner_nonce")
+                    if lease.recovered_lease is not None
+                    else None
+                ),
+                "recovery_reason": recovery_reason if lease.recovered_lease else None,
+            }
+        )
+        return lease
+
+    @staticmethod
+    def _release_execution_lease(state: RunState, lease: RunLease) -> None:
+        """Release an owned lease and make its terminal state observable."""
+        lease.stop_heartbeat()
+        if not lease.release():
+            # Another process has reclaimed an expired lease.  It is unsafe for
+            # this process to write even a final cleanup record now.
+            return
+        state.clear_execution_lease_guard()
+        state.active_resumer = None
+        state.record_lease_event(
+            {
+                "event": "lease_released",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "owner_nonce": lease.owner_nonce,
+            }
+        )
+        state.save()
 
     def load_workflow(self, source: str | Path) -> WorkflowDefinition:
         """Load a workflow from an installed ID or a local YAML path.
@@ -968,6 +1050,7 @@ class WorkflowEngine:
         run_id: str | None = None,
         installed_workflow_id: str | None = None,
         installed_registry_root: Path | None = None,
+        stale_recovery_reason: str | None = None,
     ) -> RunState:
         """Execute a workflow definition.
 
@@ -985,6 +1068,10 @@ class WorkflowEngine:
             owning registry root so a later ``resume`` can re-check the
             registry's current disabled state before continuing — see
             ``workflow_resume``.
+        stale_recovery_reason:
+            Required when ``run_id`` names a run whose previous owner lease
+            expired.  It records why an operator determined that owner had
+            stopped before its run state can be reclaimed.
 
         Returns
         -------
@@ -1014,63 +1101,73 @@ class WorkflowEngine:
             ),
         )
 
-        # Persist a copy of the workflow definition so resume can
-        # reload it even if the original source is no longer available
-        # (e.g. a local YAML path that was moved or deleted).
-        run_dir = self.project_root / ".specify" / "workflows" / "runs" / state.run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        workflow_copy = run_dir / "workflow.yml"
-        import yaml
-        with open(workflow_copy, "w", encoding="utf-8") as f:
-            yaml.safe_dump(definition.data, f, sort_keys=False)
-
-        # Resolve inputs
-        resolved_inputs = self._resolve_inputs(definition, inputs or {})
-        state.inputs = resolved_inputs
-        workflow_dir = (
-            str(definition.source_path.resolve().parent)
-            if definition.source_path is not None
-            else None
+        lease = self._claim_execution_lease(
+            state, recovery_reason=stale_recovery_reason
         )
-        state.workflow_dir = workflow_dir
-        state.status = RunStatus.RUNNING
-        state.save()
-
-        context = StepContext(
-            inputs=resolved_inputs,
-            default_integration=definition.default_integration,
-            default_model=definition.default_model,
-            default_options=definition.default_options,
-            project_root=str(self.project_root),
-            run_id=state.run_id,
-            workflow_dir=workflow_dir,
-        )
-
-        # Execute steps
         try:
-            self._execute_steps(definition.steps, context, state, STEP_REGISTRY)
-        except KeyboardInterrupt:
-            state.status = RunStatus.PAUSED
-            state.append_log({"event": "workflow_interrupted"})
+            # Persist a copy of the workflow definition so resume can
+            # reload it even if the original source is no longer available
+            # (e.g. a local YAML path that was moved or deleted).
+            run_dir = self.project_root / ".specify" / "workflows" / "runs" / state.run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            workflow_copy = run_dir / "workflow.yml"
+            import yaml
+            with open(workflow_copy, "w", encoding="utf-8") as f:
+                yaml.safe_dump(definition.data, f, sort_keys=False)
+
+            # Resolve inputs
+            resolved_inputs = self._resolve_inputs(definition, inputs or {})
+            state.inputs = resolved_inputs
+            workflow_dir = (
+                str(definition.source_path.resolve().parent)
+                if definition.source_path is not None
+                else None
+            )
+            state.workflow_dir = workflow_dir
+            state.status = RunStatus.RUNNING
+            state.save()
+            lease.start_heartbeat()
+
+            context = StepContext(
+                inputs=resolved_inputs,
+                default_integration=definition.default_integration,
+                default_model=definition.default_model,
+                default_options=definition.default_options,
+                project_root=str(self.project_root),
+                run_id=state.run_id,
+                workflow_dir=workflow_dir,
+            )
+
+            # Execute steps
+            try:
+                self._execute_steps(definition.steps, context, state, STEP_REGISTRY)
+            except KeyboardInterrupt:
+                state.status = RunStatus.PAUSED
+                state.append_log({"event": "workflow_interrupted"})
+                state.save()
+                return state
+            except RunLeaseLostError:
+                raise
+            except Exception as exc:
+                state.status = RunStatus.FAILED
+                state.error = str(exc)
+                state.append_log({"event": "workflow_failed", "error": str(exc)})
+                state.save()
+                raise
+
+            if state.status == RunStatus.RUNNING:
+                state.status = RunStatus.COMPLETED
+            state.append_log({"event": "workflow_finished", "status": state.status.value})
             state.save()
             return state
-        except Exception as exc:
-            state.status = RunStatus.FAILED
-            state.error = str(exc)
-            state.append_log({"event": "workflow_failed", "error": str(exc)})
-            state.save()
-            raise
-
-        if state.status == RunStatus.RUNNING:
-            state.status = RunStatus.COMPLETED
-        state.append_log({"event": "workflow_finished", "status": state.status.value})
-        state.save()
-        return state
+        finally:
+            self._release_execution_lease(state, lease)
 
     def resume(
         self,
         run_id: str,
         inputs: dict[str, Any] | None = None,
+        stale_recovery_reason: str | None = None,
     ) -> RunState:
         """Resume a paused or failed workflow run.
 
@@ -1081,7 +1178,13 @@ class WorkflowEngine:
         empty/``None`` ``inputs`` leaves the run's inputs unchanged.
         """
         state = RunState.load(run_id, self.project_root)
-        if state.status not in (RunStatus.PAUSED, RunStatus.FAILED):
+        recovering_interrupted_running_state = (
+            state.status == RunStatus.RUNNING and bool(stale_recovery_reason)
+        )
+        if (
+            state.status not in (RunStatus.PAUSED, RunStatus.FAILED)
+            and not recovering_interrupted_running_state
+        ):
             msg = f"Cannot resume run {run_id!r} with status {state.status.value!r}."
             raise ValueError(msg)
 
@@ -1105,51 +1208,60 @@ class WorkflowEngine:
             merged = {**state.inputs, **inputs}
             state.inputs = self._resolve_inputs(definition, merged)
 
-        # Restore context
-        context = StepContext(
-            inputs=state.inputs,
-            steps=state.step_results,
-            default_integration=definition.default_integration,
-            default_model=definition.default_model,
-            default_options=definition.default_options,
-            project_root=str(self.project_root),
-            run_id=state.run_id,
-            workflow_dir=state.workflow_dir,
+        lease = self._claim_execution_lease(
+            state, recovery_reason=stale_recovery_reason
         )
-
-        from . import STEP_REGISTRY
-
-        state.error = None
-        state.status = RunStatus.RUNNING
-        state.save()
-
-        # Resume from the current step — re-execute it so gates
-        # can prompt interactively again.
-        remaining_steps = definition.steps[state.current_step_index :]
-        step_offset = state.current_step_index
-
         try:
-            self._execute_steps(
-                remaining_steps, context, state, STEP_REGISTRY,
-                step_offset=step_offset,
+            # Restore context
+            context = StepContext(
+                inputs=state.inputs,
+                steps=state.step_results,
+                default_integration=definition.default_integration,
+                default_model=definition.default_model,
+                default_options=definition.default_options,
+                project_root=str(self.project_root),
+                run_id=state.run_id,
+                workflow_dir=state.workflow_dir,
             )
-        except KeyboardInterrupt:
-            state.status = RunStatus.PAUSED
-            state.append_log({"event": "workflow_interrupted"})
+
+            from . import STEP_REGISTRY
+
+            state.error = None
+            state.status = RunStatus.RUNNING
+            state.save()
+            lease.start_heartbeat()
+
+            # Resume from the current step — re-execute it so gates
+            # can prompt interactively again.
+            remaining_steps = definition.steps[state.current_step_index :]
+            step_offset = state.current_step_index
+
+            try:
+                self._execute_steps(
+                    remaining_steps, context, state, STEP_REGISTRY,
+                    step_offset=step_offset,
+                )
+            except KeyboardInterrupt:
+                state.status = RunStatus.PAUSED
+                state.append_log({"event": "workflow_interrupted"})
+                state.save()
+                return state
+            except RunLeaseLostError:
+                raise
+            except Exception as exc:
+                state.status = RunStatus.FAILED
+                state.error = str(exc)
+                state.append_log({"event": "resume_failed", "error": str(exc)})
+                state.save()
+                raise
+
+            if state.status == RunStatus.RUNNING:
+                state.status = RunStatus.COMPLETED
+            state.append_log({"event": "workflow_finished", "status": state.status.value})
             state.save()
             return state
-        except Exception as exc:
-            state.status = RunStatus.FAILED
-            state.error = str(exc)
-            state.append_log({"event": "resume_failed", "error": str(exc)})
-            state.save()
-            raise
-
-        if state.status == RunStatus.RUNNING:
-            state.status = RunStatus.COMPLETED
-        state.append_log({"event": "workflow_finished", "status": state.status.value})
-        state.save()
-        return state
+        finally:
+            self._release_execution_lease(state, lease)
 
     @staticmethod
     def _record_result(
