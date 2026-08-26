@@ -28,7 +28,7 @@ from ..integration_state import (
     default_integration_key,
     try_read_integration_json,
 )
-from .base import RunStatus, StepContext, StepResult, StepStatus
+from .base import RunStatus, StepBase, StepContext, StepResult, StepStatus
 from .lease import RunLease, RunLeaseLostError, RunLeaseManager
 
 # -- Workflow Definition --------------------------------------------------
@@ -710,6 +710,11 @@ class RunState:
         self.updated_at = self.created_at
         self.log_entries: list[dict[str, Any]] = []
         self.error: str | None = None
+        # An explicit workflow-level observer may project each atomically
+        # committed native state into a separate sidecar.  It is deliberately
+        # transient: it is configured from the workflow definition on every
+        # execute/resume and never persisted in ``state.json``.
+        self._persist_observer: Any = None
         # The active process installs a guard here before it persists RUNNING.
         # Every subsequent state save checks the owner nonce, preventing a
         # previously-stale process from overwriting a newly-reclaimed run.
@@ -762,6 +767,16 @@ class RunState:
         with self._lock:
             self.lease_history.append(event)
 
+    def set_persist_observer(self, observer: Any) -> None:
+        """Set the optional callback invoked after each successful save.
+
+        The observer receives the same JSON-compatible snapshot that was
+        committed to ``state.json``.  It runs after the run lock is released,
+        so a sidecar observer cannot deadlock a state save.
+        """
+        with self._lock:
+            self._persist_observer = observer
+
     def save(self) -> None:
         """Persist current state to disk.
 
@@ -773,6 +788,8 @@ class RunState:
         runs_dir = self.runs_dir
         runs_dir.mkdir(parents=True, exist_ok=True)
 
+        observer: Any = None
+        snapshot: dict[str, Any] | None = None
         with self._lock:
             if self._execution_lease_guard is not None:
                 self._execution_lease_guard()
@@ -798,6 +815,15 @@ class RunState:
             }
             self._atomic_write_json(runs_dir / "state.json", state_data)
             self._atomic_write_json(runs_dir / "inputs.json", {"inputs": self.inputs})
+            observer = self._persist_observer
+            # ``state_data`` contains references to mutable step results.
+            # Reparse JSON so an observer sees exactly the committed snapshot,
+            # not later concurrent mutations of those references.
+            if observer is not None:
+                snapshot = json.loads(json.dumps(state_data))
+
+        if observer is not None and snapshot is not None:
+            observer(snapshot)
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -1003,6 +1029,45 @@ class WorkflowEngine:
         )
         state.save()
 
+    @staticmethod
+    def _configure_state_observer(
+        definition: WorkflowDefinition,
+        state: RunState,
+        registry: dict[str, Any],
+        project_root: Path,
+    ) -> None:
+        """Attach the workflow's explicit state-sidecar observer, if any."""
+        workflow = definition.data.get("workflow")
+        if not isinstance(workflow, dict):
+            return
+        config = workflow.get("state_observer")
+        if config is None:
+            return
+        if not isinstance(config, dict):
+            raise ValueError("'workflow.state_observer' must be a mapping.")
+        type_key = config.get("type")
+        if not isinstance(type_key, str) or not type_key:
+            raise ValueError("'workflow.state_observer.type' must name a step type.")
+        observer = registry.get(type_key)
+        if observer is None:
+            raise ValueError(
+                f"Workflow state observer step type is not registered: {type_key!r}."
+            )
+        hook = getattr(observer, "observe_persisted_run_state", None)
+        if (
+            not callable(hook)
+            or type(observer).observe_persisted_run_state
+            is StepBase.observe_persisted_run_state
+        ):
+            raise ValueError(
+                f"Workflow state observer {type_key!r} does not support persisted-state observation."
+            )
+
+        def persist(snapshot: dict[str, Any]) -> None:
+            hook(config, snapshot, str(project_root))
+
+        state.set_persist_observer(persist)
+
     def load_workflow(self, source: str | Path) -> WorkflowDefinition:
         """Load a workflow from an installed ID or a local YAML path.
 
@@ -1121,6 +1186,9 @@ class WorkflowEngine:
             state, recovery_reason=stale_recovery_reason
         )
         try:
+            self._configure_state_observer(
+                definition, state, STEP_REGISTRY, self.project_root
+            )
             # Persist a copy of the workflow definition so resume can
             # reload it even if the original source is no longer available
             # (e.g. a local YAML path that was moved or deleted).
@@ -1193,6 +1261,8 @@ class WorkflowEngine:
         workflow inputs. Keys not supplied keep their persisted values; an
         empty/``None`` ``inputs`` leaves the run's inputs unchanged.
         """
+        from . import STEP_REGISTRY
+
         state = RunState.load(run_id, self.project_root)
         recovering_interrupted_running_state = (
             state.status == RunStatus.RUNNING and bool(stale_recovery_reason)
@@ -1250,6 +1320,9 @@ class WorkflowEngine:
             state, recovery_reason=stale_recovery_reason
         )
         try:
+            self._configure_state_observer(
+                definition, state, STEP_REGISTRY, self.project_root
+            )
             # Restore context
             context = StepContext(
                 inputs=state.inputs,
@@ -1262,8 +1335,6 @@ class WorkflowEngine:
                 is_resume=True,
                 workflow_dir=state.workflow_dir,
             )
-
-            from . import STEP_REGISTRY
 
             state.error = None
             state.status = RunStatus.RUNNING
