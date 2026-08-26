@@ -716,6 +716,10 @@ class RunState:
         self._execution_lease_guard: Any = None
         self.active_resumer: dict[str, Any] | None = None
         self.lease_history: list[dict[str, Any]] = []
+        # A failed workflow that declares ``remediation_note`` records the
+        # operator's corrective-work statement alongside the original error
+        # before the engine retries only its current failed step.
+        self.remediation: dict[str, Any] | None = None
 
     @property
     def runs_dir(self) -> Path:
@@ -790,6 +794,7 @@ class RunState:
                 "error": self.error,
                 "active_resumer": self.active_resumer,
                 "lease_history": self.lease_history,
+                "remediation": self.remediation,
             }
             self._atomic_write_json(runs_dir / "state.json", state_data)
             self._atomic_write_json(runs_dir / "inputs.json", {"inputs": self.inputs})
@@ -898,6 +903,10 @@ class RunState:
             raise ValueError("Invalid run state: 'lease_history' must be a list")
         state.active_resumer = active_resumer
         state.lease_history = lease_history
+        remediation = state_data.get("remediation")
+        if remediation is not None and not isinstance(remediation, dict):
+            raise ValueError("Invalid run state: 'remediation' must be an object or null")
+        state.remediation = remediation
 
         inputs_path = runs_dir / "inputs.json"
         if inputs_path.exists():
@@ -1215,22 +1224,30 @@ class WorkflowEngine:
             merged = {**state.inputs, **inputs}
             state.inputs = self._resolve_inputs(definition, merged)
 
-lease = self._claim_execution_lease(
-    state, recovery_reason=stale_recovery_reason
-)
-try:
-    # Restore context
-    context = StepContext(
-        inputs=state.inputs,
-        steps=state.step_results,
-        default_integration=definition.default_integration,
-        default_model=definition.default_model,
-        default_options=definition.default_options,
-        project_root=str(self.project_root),
-        run_id=state.run_id,
-        is_resume=True,
-        workflow_dir=state.workflow_dir,
-    )
+        # Workflows that expose remediation_note opt into an explicit failed-run
+        # recovery contract. Check before acquiring the lease or changing any
+        # state, so a missing/blank note cannot turn a failed run into running
+        # or interfere with another resumer. Existing step results stay intact
+        # and ``current_step_index`` below still limits execution to the failed
+        # step and its remaining successors.
+        if state.status == RunStatus.FAILED and isinstance(definition.inputs, dict):
+            remediation_definition = definition.inputs.get("remediation_note")
+            if isinstance(remediation_definition, dict):
+                remediation_note = state.inputs.get("remediation_note")
+                if not isinstance(remediation_note, str) or not remediation_note.strip():
+                    raise ValueError(
+                        "A non-empty remediation_note is required before retrying "
+                        "a failed workflow stage."
+                    )
+                state.remediation = {
+                    "failed_step_id": state.current_step_id,
+                    "previous_error": state.error,
+                    "note": remediation_note.strip(),
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+        lease = self._claim_execution_lease(
+            state, recovery_reason=stale_recovery_reason
         )
         try:
             # Restore context
@@ -1242,6 +1259,7 @@ try:
                 default_options=definition.default_options,
                 project_root=str(self.project_root),
                 run_id=state.run_id,
+                is_resume=True,
                 workflow_dir=state.workflow_dir,
             )
 
