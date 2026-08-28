@@ -99,6 +99,29 @@ def test_paths_only_succeeds_on_non_spec_branch(prereq_repo: Path) -> None:
 
 
 @requires_bash
+def test_paths_only_resolves_template_without_plan(prereq_repo: Path) -> None:
+    """--paths-only includes requested template content without plan validation."""
+    feat = prereq_repo / "specs" / "001-my-feature"
+    feat.mkdir(parents=True, exist_ok=True)
+    _write_feature_json(prereq_repo)
+    templates = prereq_repo / ".specify" / "templates"
+    templates.mkdir()
+    (templates / "checklist-template.md").write_text("# checklist\n", encoding="utf-8")
+    script = prereq_repo / ".specify" / "scripts" / "bash" / "check-prerequisites.sh"
+    result = subprocess.run(
+        ["bash", str(script), "--json", "--paths-only", "--template", "checklist-template"],
+        cwd=prereq_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_clean_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["AVAILABLE_DOCS"] == []
+    assert data["TEMPLATE_CONTENT"] == "# checklist\n"
+
+@requires_bash
 def test_paths_only_succeeds_on_spec_branch(prereq_repo: Path) -> None:
     """--paths-only must also work when feature.json and SPECIFY_FEATURE agree."""
     feat = prereq_repo / "specs" / "001-my-feature"
