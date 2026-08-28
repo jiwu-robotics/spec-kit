@@ -107,22 +107,49 @@ fi
 eval "$_paths_output"
 unset _paths_output
 
+TEMPLATE_CONTENT=""
+if [[ -n "$TEMPLATE_NAME" ]]; then
+    if TEMPLATE_CONTENT=$(resolve_template_content "$TEMPLATE_NAME" "$REPO_ROOT"; status=$?; printf x; exit "$status"); then
+        TEMPLATE_CONTENT="${TEMPLATE_CONTENT%x}"
+    else
+        echo "ERROR: Could not resolve required $TEMPLATE_NAME from the template override stack for $REPO_ROOT" >&2
+        exit 1
+    fi
+fi
+
+
 # If paths-only mode, output paths and exit (no validation)
 if $PATHS_ONLY; then
     if $JSON_MODE; then
-        # Minimal JSON paths payload (no validation performed)
         if has_jq; then
-            jq -cn \
-                --arg repo_root "$REPO_ROOT" \
-                --arg branch "$CURRENT_BRANCH" \
-                --arg feature_dir "$FEATURE_DIR" \
-                --arg feature_spec "$FEATURE_SPEC" \
-                --arg impl_plan "$IMPL_PLAN" \
-                --arg tasks "$TASKS" \
-                '{REPO_ROOT:$repo_root,BRANCH:$branch,FEATURE_DIR:$feature_dir,FEATURE_SPEC:$feature_spec,IMPL_PLAN:$impl_plan,TASKS:$tasks}'
+            if [[ -n "$TEMPLATE_NAME" ]]; then
+                jq -cn \
+                    --arg repo_root "$REPO_ROOT" \
+                    --arg branch "$CURRENT_BRANCH" \
+                    --arg feature_dir "$FEATURE_DIR" \
+                    --arg feature_spec "$FEATURE_SPEC" \
+                    --arg impl_plan "$IMPL_PLAN" \
+                    --arg tasks "$TASKS" \
+                    --arg template_content "$TEMPLATE_CONTENT" \
+                    '{REPO_ROOT:$repo_root,BRANCH:$branch,FEATURE_DIR:$feature_dir,FEATURE_SPEC:$feature_spec,IMPL_PLAN:$impl_plan,TASKS:$tasks,AVAILABLE_DOCS:[],TEMPLATE_CONTENT:$template_content}'
+            else
+                jq -cn \
+                    --arg repo_root "$REPO_ROOT" \
+                    --arg branch "$CURRENT_BRANCH" \
+                    --arg feature_dir "$FEATURE_DIR" \
+                    --arg feature_spec "$FEATURE_SPEC" \
+                    --arg impl_plan "$IMPL_PLAN" \
+                    --arg tasks "$TASKS" \
+                    '{REPO_ROOT:$repo_root,BRANCH:$branch,FEATURE_DIR:$feature_dir,FEATURE_SPEC:$feature_spec,IMPL_PLAN:$impl_plan,TASKS:$tasks,AVAILABLE_DOCS:[]}'
+            fi
         else
-            printf '{"REPO_ROOT":"%s","BRANCH":"%s","FEATURE_DIR":"%s","FEATURE_SPEC":"%s","IMPL_PLAN":"%s","TASKS":"%s"}\n' \
-                "$(json_escape "$REPO_ROOT")" "$(json_escape "$CURRENT_BRANCH")" "$(json_escape "$FEATURE_DIR")" "$(json_escape "$FEATURE_SPEC")" "$(json_escape "$IMPL_PLAN")" "$(json_escape "$TASKS")"
+            if [[ -n "$TEMPLATE_NAME" ]]; then
+                printf '{"REPO_ROOT":"%s","BRANCH":"%s","FEATURE_DIR":"%s","FEATURE_SPEC":"%s","IMPL_PLAN":"%s","TASKS":"%s","AVAILABLE_DOCS":[],"TEMPLATE_CONTENT":"%s"}\n' \
+                    "$(json_escape "$REPO_ROOT")" "$(json_escape "$CURRENT_BRANCH")" "$(json_escape "$FEATURE_DIR")" "$(json_escape "$FEATURE_SPEC")" "$(json_escape "$IMPL_PLAN")" "$(json_escape "$TASKS")" "$(json_escape "$TEMPLATE_CONTENT")"
+            else
+                printf '{"REPO_ROOT":"%s","BRANCH":"%s","FEATURE_DIR":"%s","FEATURE_SPEC":"%s","IMPL_PLAN":"%s","TASKS":"%s","AVAILABLE_DOCS":[]}\n' \
+                    "$(json_escape "$REPO_ROOT")" "$(json_escape "$CURRENT_BRANCH")" "$(json_escape "$FEATURE_DIR")" "$(json_escape "$FEATURE_SPEC")" "$(json_escape "$IMPL_PLAN")" "$(json_escape "$TASKS")"
+            fi
         fi
     else
         echo "REPO_ROOT: $REPO_ROOT"
@@ -181,15 +208,7 @@ if $INCLUDE_TASKS && [[ -f "$TASKS" ]]; then
     docs+=("tasks.md")
 fi
 
-TEMPLATE_CONTENT=""
-if [[ -n "$TEMPLATE_NAME" ]]; then
-    if TEMPLATE_CONTENT=$(resolve_template_content "$TEMPLATE_NAME" "$REPO_ROOT"; status=$?; printf x; exit "$status"); then
-        TEMPLATE_CONTENT="${TEMPLATE_CONTENT%x}"
-    else
-        echo "ERROR: Could not resolve required $TEMPLATE_NAME from the template override stack for $REPO_ROOT" >&2
-        exit 1
-    fi
-fi
+
 
 # Output results
 if $JSON_MODE; then

@@ -71,17 +71,32 @@ if ($PathsOnly) {
     $paths = Get-FeaturePathsEnv
 }
 
+$templateContent = $null
+if ($Template) {
+    $templateContent = Resolve-TemplateContent -TemplateName $Template -RepoRoot $paths.REPO_ROOT
+    if ($null -eq $templateContent) {
+        [Console]::Error.WriteLine("ERROR: Could not resolve required $Template from the template override stack for $($paths.REPO_ROOT)")
+        exit 1
+    }
+}
+
+
 # If paths-only mode, output paths and exit (no validation)
 if ($PathsOnly) {
     if ($Json) {
-        [PSCustomObject]@{
+        $result = [ordered]@{
             REPO_ROOT    = $paths.REPO_ROOT
             BRANCH       = $paths.CURRENT_BRANCH
             FEATURE_DIR  = $paths.FEATURE_DIR
             FEATURE_SPEC = $paths.FEATURE_SPEC
             IMPL_PLAN    = $paths.IMPL_PLAN
             TASKS        = $paths.TASKS
-        } | ConvertTo-Json -Compress
+            AVAILABLE_DOCS = @()
+        }
+        if ($Template) {
+            $result.TEMPLATE_CONTENT = $templateContent
+        }
+        [PSCustomObject]$result | ConvertTo-Json -Compress
     } else {
         Write-Output "REPO_ROOT: $($paths.REPO_ROOT)"
         Write-Output "BRANCH: $($paths.CURRENT_BRANCH)"
@@ -143,14 +158,7 @@ if ($IncludeTasks -and (Test-Path $paths.TASKS)) {
     $docs += 'tasks.md'
 }
 
-$templateContent = $null
-if ($Template) {
-    $templateContent = Resolve-TemplateContent -TemplateName $Template -RepoRoot $paths.REPO_ROOT
-    if ($null -eq $templateContent) {
-        [Console]::Error.WriteLine("ERROR: Could not resolve required $Template from the template override stack for $($paths.REPO_ROOT)")
-        exit 1
-    }
-}
+
 
 # Output results
 if ($Json) {
