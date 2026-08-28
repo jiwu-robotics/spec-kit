@@ -66,6 +66,26 @@ def test_python_fresh_copy_matches_bash(tmp_path: Path) -> None:
 
 
 @requires_bash
+def test_python_paths_only_matches_bash_without_materializing_plan(
+    tmp_path: Path,
+) -> None:
+    repo_a = _setup_repo(tmp_path, "proj-a")
+    repo_b = _setup_repo(tmp_path, "proj-b")
+
+    bash = run(bash_cmd(repo_a, SCRIPT, "--json", "--paths-only"), repo_a)
+    py = run(py_cmd(repo_b, SCRIPT, "--json", "--paths-only"), repo_b)
+
+    assert py.returncode == bash.returncode == 0
+    assert normalize_repo_paths(py.stdout, repo_b) == normalize_repo_paths(
+        bash.stdout, repo_a
+    )
+    assert normalize_repo_paths(py.stderr, repo_b) == normalize_repo_paths(
+        bash.stderr, repo_a
+    )
+    for repo in (repo_a, repo_b):
+        assert not (repo / "specs" / "001-my-feature" / "plan.md").exists()
+
+@requires_bash
 def test_all_variants_materialize_composed_plan_template(tmp_path: Path) -> None:
     repos = [
         _setup_repo(tmp_path, "bash"),
