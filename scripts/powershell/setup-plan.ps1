@@ -4,6 +4,7 @@
 [CmdletBinding()]
 param(
     [switch]$Json,
+    [switch]$PathsOnly,
     [switch]$Help,
     # Capture extra positional arguments to match Bash/Python behavior.
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -14,9 +15,10 @@ $ErrorActionPreference = 'Stop'
 
 # Show help if requested
 if ($Help) {
-    Write-Output "Usage: ./setup-plan.ps1 [-Json] [-Help]"
-    Write-Output "  -Json     Output results in JSON format"
-    Write-Output "  -Help     Show this help message"
+    Write-Output "Usage: ./setup-plan.ps1 [-Json] [-PathsOnly] [-Help]"
+    Write-Output "  -Json       Output results in JSON format"
+    Write-Output "  -PathsOnly  Resolve paths without writing files"
+    Write-Output "  -Help       Show this help message"
     exit 0
 }
 
@@ -28,11 +30,43 @@ if ($RemainingArgs.Count -gt 0) {
 # Load common functions
 . "$PSScriptRoot/common.ps1"
 
-# Get all paths and variables from common functions
-$paths = Get-FeaturePathsEnv -ReturnNullOnError
+# Get all paths and variables from common functions.
+# -PathsOnly must leave feature metadata, directories, and plan.md untouched.
+if ($PathsOnly) {
+    $paths = Get-FeaturePathsEnv -NoPersist -ReturnNullOnError
+} else {
+    $paths = Get-FeaturePathsEnv -ReturnNullOnError
+}
 if (-not $paths) {
     [Console]::Error.WriteLine("ERROR: Failed to resolve feature paths")
     exit 1
+}
+
+function Write-SetupPlanResult {
+    param(
+        [Parameter(Mandatory = $true)]$ResolvedPaths,
+        [switch]$JsonMode
+    )
+
+    if ($JsonMode) {
+        $result = [PSCustomObject]@{
+            FEATURE_SPEC = $ResolvedPaths.FEATURE_SPEC
+            IMPL_PLAN = $ResolvedPaths.IMPL_PLAN
+            SPECS_DIR = $ResolvedPaths.FEATURE_DIR
+            BRANCH = $ResolvedPaths.CURRENT_BRANCH
+        }
+        $result | ConvertTo-Json -Compress
+    } else {
+        Write-Output "FEATURE_SPEC: $($ResolvedPaths.FEATURE_SPEC)"
+        Write-Output "IMPL_PLAN: $($ResolvedPaths.IMPL_PLAN)"
+        Write-Output "SPECS_DIR: $($ResolvedPaths.FEATURE_DIR)"
+        Write-Output "BRANCH: $($ResolvedPaths.CURRENT_BRANCH)"
+    }
+}
+
+if ($PathsOnly) {
+    Write-SetupPlanResult -ResolvedPaths $paths -JsonMode:$Json
+    exit 0
 }
 
 # Ensure the feature directory exists
@@ -71,18 +105,4 @@ if (Test-Path $paths.IMPL_PLAN -PathType Leaf) {
     }
 }
 
-# Output results
-if ($Json) {
-    $result = [PSCustomObject]@{
-        FEATURE_SPEC = $paths.FEATURE_SPEC
-        IMPL_PLAN = $paths.IMPL_PLAN
-        FEATURE_DIR = $paths.FEATURE_DIR
-        BRANCH = $paths.CURRENT_BRANCH
-    }
-    $result | ConvertTo-Json -Compress
-} else {
-    Write-Output "FEATURE_SPEC: $($paths.FEATURE_SPEC)"
-    Write-Output "IMPL_PLAN: $($paths.IMPL_PLAN)"
-    Write-Output "FEATURE_DIR: $($paths.FEATURE_DIR)"
-    Write-Output "BRANCH: $($paths.CURRENT_BRANCH)"
-}
+Write-SetupPlanResult -ResolvedPaths $paths -JsonMode:$Json

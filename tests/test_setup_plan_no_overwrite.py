@@ -175,7 +175,69 @@ def test_setup_plan_json_parseable_on_first_run(plan_repo: Path) -> None:
     assert "Copied plan template" in result.stderr
 
 
+@requires_bash
+def test_setup_plan_paths_only_does_not_materialize_plan(plan_repo: Path) -> None:
+    """Path-only resolution returns paths without creating the feature or plan."""
+    script = plan_repo / ".specify" / "scripts" / "bash" / "setup-plan.sh"
+    result = subprocess.run(
+        ["bash", str(script), "--json", "--paths-only"],
+        cwd=plan_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_clean_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert not Path(data["SPECS_DIR"]).exists()
+    assert not Path(data["IMPL_PLAN"]).exists()
+    assert result.stderr == ""
+
+@requires_bash
+def test_setup_plan_paths_only_does_not_persist_feature_override(plan_repo: Path) -> None:
+    """Path-only resolution must not rewrite feature.json for an environment override."""
+    script = plan_repo / ".specify" / "scripts" / "bash" / "setup-plan.sh"
+    feature_json = plan_repo / ".specify" / "feature.json"
+    original = feature_json.read_bytes()
+    env = _clean_env()
+    env["SPECIFY_FEATURE_DIRECTORY"] = "specs/002-override"
+    result = subprocess.run(
+        ["bash", str(script), "--json", "--paths-only"],
+        cwd=plan_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert Path(data["SPECS_DIR"]) == plan_repo / "specs" / "002-override"
+    assert feature_json.read_bytes() == original
+    assert not Path(data["SPECS_DIR"]).exists()
+    assert not Path(data["IMPL_PLAN"]).exists()
+
+
 # ── PowerShell tests ──────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not (HAS_PWSH or _WINDOWS_POWERSHELL), reason="no PowerShell available")
+def test_ps_setup_plan_paths_only_does_not_materialize_plan(plan_repo: Path) -> None:
+    """Path-only resolution returns paths without creating the feature or plan."""
+    script = plan_repo / ".specify" / "scripts" / "powershell" / "setup-plan.ps1"
+    exe = "pwsh" if HAS_PWSH else _WINDOWS_POWERSHELL
+    result = subprocess.run(
+        [exe, "-NoProfile", "-File", str(script), "-Json", "-PathsOnly"],
+        cwd=plan_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_clean_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert not Path(data["SPECS_DIR"]).exists()
+    assert not Path(data["IMPL_PLAN"]).exists()
+    assert result.stderr == ""
 
 
 @pytest.mark.skipif(not (HAS_PWSH or _WINDOWS_POWERSHELL), reason="no PowerShell available")
