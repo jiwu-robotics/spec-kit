@@ -697,6 +697,12 @@ class TestCopilotSkillsMode:
         assert copilot.effective_invoke_separator({"skills": True}) == "-"
         assert copilot.effective_invoke_separator({"commands": True}) == "."
 
+    def test_multi_install_safety_tracks_layout(self):
+        """Only the isolated Skills layout is safe to co-install."""
+        copilot = self._make_copilot()
+        assert copilot.is_multi_install_safe(parsed_options={"skills": True})
+        assert not copilot.is_multi_install_safe(parsed_options={"commands": True})
+
     def test_invoke_separator_for_mode_tracks_persisted_state(self):
         """Regression (review #3415): registration paths (preset/extension
         command refs) must resolve the separator from the persisted ai_skills

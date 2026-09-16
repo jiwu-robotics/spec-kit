@@ -134,20 +134,24 @@ def _available_docs(paths: FeaturePaths, include_tasks: bool) -> list[str]:
     return docs
 
 
-def _print_paths_only(paths: FeaturePaths, json_mode: bool) -> None:
+def _print_paths_only(
+    paths: FeaturePaths,
+    json_mode: bool,
+    template_content: str | None,
+) -> None:
     if json_mode:
-        sys.stdout.write(
-            _json_line(
-                {
-                    "REPO_ROOT": str(paths.repo_root),
-                    "BRANCH": paths.current_branch,
-                    "FEATURE_DIR": str(paths.feature_dir),
-                    "FEATURE_SPEC": str(paths.feature_spec),
-                    "IMPL_PLAN": str(paths.impl_plan),
-                    "TASKS": str(paths.tasks),
-                }
-            )
-        )
+        payload: dict[str, object] = {
+            "REPO_ROOT": str(paths.repo_root),
+            "BRANCH": paths.current_branch,
+            "FEATURE_DIR": str(paths.feature_dir),
+            "FEATURE_SPEC": str(paths.feature_spec),
+            "IMPL_PLAN": str(paths.impl_plan),
+            "TASKS": str(paths.tasks),
+            "AVAILABLE_DOCS": [],
+        }
+        if template_content is not None:
+            payload["TEMPLATE_CONTENT"] = template_content
+        sys.stdout.write(_json_line(payload))
         return
 
     print(f"REPO_ROOT: {paths.repo_root}")
@@ -156,7 +160,6 @@ def _print_paths_only(paths: FeaturePaths, json_mode: bool) -> None:
     print(f"FEATURE_SPEC: {paths.feature_spec}")
     print(f"IMPL_PLAN: {paths.impl_plan}")
     print(f"TASKS: {paths.tasks}")
-
 
 def _status_marker(ok: bool) -> str:
     """Return the status glyph, downgraded to ASCII when stdout cannot encode it.
@@ -210,8 +213,25 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: Failed to resolve feature paths", file=sys.stderr)
         return int(exc.code) if isinstance(exc.code, int) else 1
 
+    template_content = None
+    if args.template_name:
+        try:
+            template_content = resolve_template_content(
+                args.template_name, paths.repo_root
+            )
+        except TemplateResolutionError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        if template_content is None:
+            print(
+                f"ERROR: Could not resolve required {args.template_name} from "
+                f"the template override stack for {paths.repo_root}",
+                file=sys.stderr,
+            )
+            return 1
+
     if args.paths_only:
-        _print_paths_only(paths, args.json_mode)
+        _print_paths_only(paths, args.json_mode, template_content)
         return 0
 
     if not paths.feature_dir.is_dir():
@@ -239,22 +259,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     docs = _available_docs(paths, args.include_tasks)
-    template_content = None
-    if args.template_name:
-        try:
-            template_content = resolve_template_content(
-                args.template_name, paths.repo_root
-            )
-        except TemplateResolutionError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        if template_content is None:
-            print(
-                f"ERROR: Could not resolve required {args.template_name} from "
-                f"the template override stack for {paths.repo_root}",
-                file=sys.stderr,
-            )
-            return 1
 
     if args.json_mode:
         payload: dict[str, object] = {

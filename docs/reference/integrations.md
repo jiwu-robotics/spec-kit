@@ -280,6 +280,7 @@ The currently declared multi-install safe integrations are:
 | `cline` | `.clinerules/workflows` |
 | `codebuddy` | `.codebuddy/commands` |
 | `codex` | `.agents/skills` |
+| `copilot` (Skills layout) | `.github/skills` |
 | `command-code` | `.commandcode/skills` |
 | `cursor-agent` | `.cursor/skills` |
 | `droid` | `.factory/skills` |
@@ -300,6 +301,11 @@ The currently declared multi-install safe integrations are:
 | `zcode` | `.zcode/skills` |
 
 Integrations that share a command directory with another integration, require dynamic install paths such as `--commands-dir`, or merge shared tool settings are not declared safe by default. They can still be installed alongside another integration with `--force`.
+
+Copilot's explicit `--skills` layout is multi-install safe: it writes generated
+Skills under the isolated static `.github/skills/` root. Its `--commands` layout
+continues to require `--force` alongside another integration because it can also
+manage `.vscode/settings.json`.
 
 ### What happens to my changes when I uninstall or switch?
 

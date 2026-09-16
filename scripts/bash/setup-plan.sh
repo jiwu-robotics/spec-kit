@@ -4,6 +4,7 @@ set -e
 
 # Parse command line arguments
 JSON_MODE=false
+PATHS_ONLY=false
 ARGS=()
 
 for arg in "$@"; do
@@ -11,10 +12,14 @@ for arg in "$@"; do
         --json)
             JSON_MODE=true
             ;;
+        --paths-only)
+            PATHS_ONLY=true
+            ;;
         --help|-h)
-            echo "Usage: $0 [--json]"
-            echo "  --json    Output results in JSON format"
-            echo "  --help    Show this help message"
+            echo "Usage: $0 [--json] [--paths-only]"
+            echo "  --json        Output results in JSON format"
+            echo "  --paths-only  Resolve paths without writing files"
+            echo "  --help        Show this help message"
             exit 0
             ;;
         *)
@@ -27,10 +32,41 @@ done
 SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-# Get all paths and variables from common functions
-_paths_output=$(get_feature_paths) || { echo "ERROR: Failed to resolve feature paths" >&2; exit 1; }
+# Get all paths and variables from common functions.
+# --paths-only must leave feature metadata, directories, and plan.md untouched.
+if $PATHS_ONLY; then
+    _paths_output=$(get_feature_paths --no-persist) || { echo "ERROR: Failed to resolve feature paths" >&2; exit 1; }
+else
+    _paths_output=$(get_feature_paths) || { echo "ERROR: Failed to resolve feature paths" >&2; exit 1; }
+fi
 eval "$_paths_output"
 unset _paths_output
+
+emit_results() {
+    if $JSON_MODE; then
+        if has_jq; then
+            jq -cn \
+                --arg feature_spec "$FEATURE_SPEC" \
+                --arg impl_plan "$IMPL_PLAN" \
+                --arg specs_dir "$FEATURE_DIR" \
+                --arg branch "$CURRENT_BRANCH" \
+                '{FEATURE_SPEC:$feature_spec,IMPL_PLAN:$impl_plan,SPECS_DIR:$specs_dir,BRANCH:$branch}'
+        else
+            printf '{"FEATURE_SPEC":"%s","IMPL_PLAN":"%s","SPECS_DIR":"%s","BRANCH":"%s"}\n' \
+                "$(json_escape "$FEATURE_SPEC")" "$(json_escape "$IMPL_PLAN")" "$(json_escape "$FEATURE_DIR")" "$(json_escape "$CURRENT_BRANCH")"
+        fi
+    else
+        echo "FEATURE_SPEC: $FEATURE_SPEC"
+        echo "IMPL_PLAN: $IMPL_PLAN"
+        echo "SPECS_DIR: $FEATURE_DIR"
+        echo "BRANCH: $CURRENT_BRANCH"
+    fi
+}
+
+if $PATHS_ONLY; then
+    emit_results
+    exit 0
+fi
 
 # Ensure the feature directory exists
 mkdir -p "$FEATURE_DIR"
@@ -64,22 +100,4 @@ else
     fi
 fi
 
-# Output results
-if $JSON_MODE; then
-    if has_jq; then
-        jq -cn \
-            --arg feature_spec "$FEATURE_SPEC" \
-            --arg impl_plan "$IMPL_PLAN" \
-            --arg specs_dir "$FEATURE_DIR" \
-            --arg branch "$CURRENT_BRANCH" \
-            '{FEATURE_SPEC:$feature_spec,IMPL_PLAN:$impl_plan,SPECS_DIR:$specs_dir,BRANCH:$branch}'
-    else
-        printf '{"FEATURE_SPEC":"%s","IMPL_PLAN":"%s","SPECS_DIR":"%s","BRANCH":"%s"}\n' \
-            "$(json_escape "$FEATURE_SPEC")" "$(json_escape "$IMPL_PLAN")" "$(json_escape "$FEATURE_DIR")" "$(json_escape "$CURRENT_BRANCH")"
-    fi
-else
-    echo "FEATURE_SPEC: $FEATURE_SPEC"
-    echo "IMPL_PLAN: $IMPL_PLAN"
-    echo "SPECS_DIR: $FEATURE_DIR"
-    echo "BRANCH: $CURRENT_BRANCH"
-fi
+emit_results

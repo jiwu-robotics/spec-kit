@@ -144,3 +144,21 @@ class StepBase(ABC):
     def can_resume(self, state: dict[str, Any]) -> bool:
         """Return whether this step can be resumed from the given state."""
         return True
+
+    def observe_persisted_run_state(
+        self,
+        config: dict[str, Any],
+        state: dict[str, Any],
+        project_root: str,
+    ) -> None:
+        """Optionally observe an atomically persisted workflow state snapshot.
+
+        A workflow opts in with ``workflow.state_observer`` and names a
+        registered custom step type.  The engine invokes this hook only after
+        it has atomically committed ``state.json``.  Implementations must be
+        stateless and must not mutate the supplied snapshot or write workflow
+        run state; they may maintain an explicitly documented sidecar.
+
+        The default is intentionally a no-op so existing step types retain
+        their current interface and semantics.
+        """

@@ -1184,6 +1184,25 @@ def _workflow_run_payload(state: Any) -> dict[str, Any]:
     error = _failed_step_error(state)
     if error is not None:
         payload["error"] = error
+    # The active owner is held in a separate, atomically-updated lease file so
+    # status sees current heartbeats rather than only the timestamp from the
+    # last state.json save.  Keep this best-effort for lightweight test doubles
+    # and legacy state objects that do not have a runs_dir property.
+    runs_dir = getattr(state, "runs_dir", None)
+    if isinstance(runs_dir, Path):
+        try:
+            from .lease import read_run_lease
+
+            active_resumer = read_run_lease(runs_dir)
+        except (OSError, ValueError):
+            active_resumer = None
+    else:
+        active_resumer = getattr(state, "active_resumer", None)
+    if active_resumer is not None:
+        payload["active_resumer"] = active_resumer
+    lease_history = getattr(state, "lease_history", None)
+    if lease_history:
+        payload["lease_history"] = lease_history
     return payload
 
 
@@ -1311,6 +1330,11 @@ def workflow_run(
     input_values: list[str] | None = typer.Option(
         None, "--input", "-i", help="Input values as key=value pairs"
     ),
+    stale_recovery_reason: str | None = typer.Option(
+        None,
+        "--recover-stale-lease",
+        help="Explicit reason to reclaim an expired run lease.",
+    ),
     json_output: bool = typer.Option(
         False,
         "--json",
@@ -1422,6 +1446,7 @@ def workflow_run(
                     and not _same_existing_path(registry_root, project_root)
                     else None
                 ),
+                stale_recovery_reason=stale_recovery_reason,
             )
     except ValueError as exc:
         err.print(f"[red]Error:[/red] {exc}")
@@ -1459,6 +1484,11 @@ def workflow_resume(
     run_id: str = typer.Argument(..., help="Run ID to resume"),
     input_values: list[str] | None = typer.Option(
         None, "--input", "-i", help="Updated input values as key=value pairs"
+    ),
+    stale_recovery_reason: str | None = typer.Option(
+        None,
+        "--recover-stale-lease",
+        help="Explicit reason to reclaim an expired owner and resume a running run.",
     ),
     json_output: bool = typer.Option(
         False,
@@ -1534,7 +1564,11 @@ def workflow_resume(
 
     try:
         with _stdout_to_stderr_when(json_output):
-            state = engine.resume(run_id, inputs or None)
+            state = engine.resume(
+                run_id,
+                inputs or None,
+                stale_recovery_reason=stale_recovery_reason,
+            )
     except FileNotFoundError:
         err.print(f"[red]Error:[/red] Run not found: {run_id}")
         raise typer.Exit(1)
@@ -1886,6 +1920,19 @@ def workflow_add(
             f"[green]✓[/green] Workflow '{_escape_markup(definition.name)}' "
             f"({_escape_markup(definition.id)}) installed"
         )
+
+    # Bundled workflows are available offline to every installed Spec Kit
+    # distribution. Resolve these before consulting a remote catalog so an
+    # installed package can add its own workflows without network access.
+    if not dev and from_url is None:
+        from .._assets import _locate_bundled_workflow
+
+        bundled_workflow = _locate_bundled_workflow(source)
+        if bundled_workflow is not None:
+            _validate_and_install_local(
+                bundled_workflow / "workflow.yml", f"bundled:{source}", expected_id=source
+            )
+            return
 
     # Explicit local install (mirrors `extension add --dev`). --dev takes
     # precedence over --from so a URL that would be ignored is never fetched.

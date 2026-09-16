@@ -142,6 +142,21 @@ class IntegrationBase(ABC):
     integration that sets this flag.
     """
 
+    def is_multi_install_safe(
+        self,
+        *,
+        project_root: Path | None = None,
+        parsed_options: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return whether this resolved integration layout safely co-installs.
+
+        Most integrations have one static layout, so their class declaration is
+        authoritative. Integrations with persisted layout options may override this
+        method and inspect either the requested options or their recorded manifest.
+        """
+        del project_root, parsed_options
+        return self.multi_install_safe
+
     legacy_flat_command_dir: str | None = None
     """Previous flat command directory retired after skill replacements exist."""
 
