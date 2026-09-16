@@ -820,18 +820,20 @@ class TestIntegrationStatus:
         assert first_rel in payload["manifests"]["copilot"]["invalid_files"]
         assert first_rel not in payload["manifests"]["copilot"]["modified_files"]
 
-    def test_status_reports_unsafe_multi_install_combination(self, copilot_project):
-        from specify_cli.integrations.manifest import IntegrationManifest
+    def test_status_reports_unsafe_multi_install_commands_layout(self, tmp_path):
+        project = _init_project(
+            tmp_path,
+            "copilot",
+            integration_options="--commands",
+        )
 
-        state_path = copilot_project / ".specify" / "integration.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["installed_integrations"] = ["copilot", "claude"]
-        state["default_integration"] = "copilot"
-        state["integration"] = "copilot"
-        state_path.write_text(json.dumps(state), encoding="utf-8")
-        IntegrationManifest("claude", copilot_project, version="test").save()
+        result = _run_in_project(
+            project,
+            ["integration", "install", "claude", "--script", "sh", "--force"],
+        )
+        assert result.exit_code == 0, result.output
 
-        result = _run_in_project(copilot_project, ["integration", "status"])
+        result = _run_in_project(project, ["integration", "status"])
 
         assert result.exit_code != 0
         assert "unsafe-multi-install" in result.output
@@ -1077,7 +1079,11 @@ class TestIntegrationInstall:
         assert "specify integration uninstall codex" not in normalized
 
     def test_install_different_when_one_exists(self, tmp_path):
-        project = _init_project(tmp_path, "copilot")
+        project = _init_project(
+            tmp_path,
+            "copilot",
+            integration_options="--commands",
+        )
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
@@ -1187,7 +1193,11 @@ class TestIntegrationInstall:
         assert data["installed_integrations"] == ["claude", "codex"]
 
     def test_install_multi_unsafe_requires_force(self, tmp_path):
-        project = _init_project(tmp_path, "copilot")
+        project = _init_project(
+            tmp_path,
+            "copilot",
+            integration_options="--commands",
+        )
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
@@ -1379,15 +1389,20 @@ class TestIntegrationInstall:
         result = _run_in_project(project, ["extension", "add", "git"])
         assert result.exit_code == 0, f"extension add failed: {result.output}"
 
-        # Copilot is not multi_install_safe, so --force is required to add it
-        # alongside the existing default integration.
+        # Copilot's explicit Skills layout uses an isolated static root, so
+        # adding it alongside Claude does not require an acknowledgement flag.
         result = _run_in_project(project, [
             "integration", "install", "copilot",
             "--script", "sh",
             "--integration-options", "--skills",
-            "--force",
         ])
         assert result.exit_code == 0, result.output
+
+        result = _run_in_project(project, ["integration", "status", "--json"])
+        assert result.exit_code == 0, result.output
+        status = json.loads(result.output)
+        assert status["multi_install_safe"] is True
+        assert status["findings"] == []
 
         # Precondition that makes --skills load-bearing: copilot IS in skills
         # mode, so its own core commands are scaffolded as skills.

@@ -76,13 +76,23 @@ def integration_install(
         console.print("No files were changed.")
         raise typer.Exit(0)
 
+    # Resolve options before the multi-install gate: dual-layout integrations
+    # need their requested layout to determine whether they can co-install.
+    raw_options, parsed_options = _resolve_integration_options(
+        integration, current, key, integration_options
+    )
+
     if installed_keys and not force:
         unsafe_keys = []
         for installed_key in installed_keys:
             installed_integration = get_integration(installed_key)
-            if not installed_integration or not getattr(installed_integration, "multi_install_safe", False):
+            if not installed_integration or not installed_integration.is_multi_install_safe(
+                project_root=project_root
+            ):
                 unsafe_keys.append(installed_key)
-        if unsafe_keys or not getattr(integration, "multi_install_safe", False):
+        if unsafe_keys or not integration.is_multi_install_safe(
+            project_root=project_root, parsed_options=parsed_options
+        ):
             console.print(
                 f"[red]Error:[/red] Installed integrations: {', '.join(installed_keys)}."
             )
@@ -103,13 +113,6 @@ def integration_install(
             raise typer.Exit(1)
 
     selected_script = _resolve_script_type(project_root, script)
-
-    # Build parsed options from --integration-options so the integration
-    # can determine its effective invoke separator before shared infra
-    # is installed.
-    raw_options, parsed_options = _resolve_integration_options(
-        integration, current, key, integration_options
-    )
 
     # Ensure shared infrastructure is present (safe to run unconditionally;
     # _install_shared_infra merges missing files without overwriting).
