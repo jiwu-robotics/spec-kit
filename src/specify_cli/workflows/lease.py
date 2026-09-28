@@ -165,12 +165,13 @@ class RunLease:
                 self._lost_error = exc
                 return
 
-    def assert_owned(self) -> None:
-        """Fail before a state write if this process lost ownership."""
+    @contextmanager
+    def ownership_guard(self) -> Iterator[None]:
+        """Hold the cross-process owner lock during a protected state commit."""
         if self._lost_error is not None:
             raise self._lost_error
-        record = self._manager.assert_owner(self.owner_nonce)
-        self.record = record
+        with self._manager.hold_owner(self.owner_nonce):
+            yield
 
     def stop_heartbeat(self) -> None:
         self._stopped.set()
@@ -226,12 +227,16 @@ class RunLeaseManager:
             _atomic_write_json(self._lease_path, record)
         return RunLease(self, record, existing)
 
-    def assert_owner(self, owner_nonce: str) -> dict[str, Any]:
+    @contextmanager
+    def hold_owner(self, owner_nonce: str) -> Iterator[None]:
+        """Keep ownership stable until the protected operation completes."""
         with _exclusive_file_lock(self._lock_path):
             current = read_run_lease(self.run_dir)
             if current is None or current["owner_nonce"] != owner_nonce:
-                raise RunLeaseLostError("Workflow run lease was replaced by another owner.")
-            return current
+                raise RunLeaseLostError(
+                    "Workflow run lease was replaced by another owner."
+                )
+            yield
 
     def heartbeat(self, owner_nonce: str) -> dict[str, Any]:
         with _exclusive_file_lock(self._lock_path):

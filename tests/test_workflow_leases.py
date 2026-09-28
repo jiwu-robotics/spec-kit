@@ -178,3 +178,122 @@ steps:
 
     assert not worker.is_alive()
     assert not errors
+
+
+def test_state_commit_holds_lease_lock_until_atomic_writes_finish(
+    tmp_path, monkeypatch
+):
+    from specify_cli.workflows.engine import RunState
+    from specify_cli.workflows.lease import RunLeaseManager
+
+    run_id = "lease-commit-race"
+    state = RunState(
+        run_id=run_id,
+        workflow_id="lease-test",
+        project_root=tmp_path,
+    )
+    state.save()
+    manager = RunLeaseManager(state.runs_dir)
+    former_owner = manager.acquire()
+    state.set_execution_lease_guard(former_owner.ownership_guard)
+
+    stale_record = json.loads(
+        (state.runs_dir / "lease.json").read_text(encoding="utf-8")
+    )
+    stale_record["expires_at"] = (
+        datetime.now(UTC) - timedelta(seconds=1)
+    ).isoformat()
+    (state.runs_dir / "lease.json").write_text(
+        json.dumps(stale_record), encoding="utf-8"
+    )
+
+    write_started = threading.Event()
+    finish_write = threading.Event()
+    recovery_attempted = threading.Event()
+    recovery_acquired = threading.Event()
+    errors: list[BaseException] = []
+    original_atomic_write = RunState._atomic_write_json
+
+    def pause_before_state_commit(path, data):
+        if path.name == "state.json":
+            write_started.set()
+            assert finish_write.wait(timeout=5)
+        original_atomic_write(path, data)
+
+    monkeypatch.setattr(
+        RunState, "_atomic_write_json", staticmethod(pause_before_state_commit)
+    )
+
+    def save_former_owner():
+        try:
+            state.error = "former owner"
+            state.save()
+        except BaseException as exc:  # noqa: BLE001 - asserted after thread joins
+            errors.append(exc)
+
+    def recover_with_successor():
+        try:
+            recovery_attempted.set()
+            successor = manager.acquire(
+                recovery_reason="verified former worker stopped"
+            )
+            recovery_acquired.set()
+            new_state = RunState.load(run_id, tmp_path)
+            new_state.set_execution_lease_guard(successor.ownership_guard)
+            new_state.error = "successor"
+            new_state.save()
+            assert successor.release()
+        except BaseException as exc:  # noqa: BLE001 - asserted after thread joins
+            errors.append(exc)
+
+    writer = threading.Thread(target=save_former_owner)
+    writer.start()
+    assert write_started.wait(timeout=5)
+    recoverer = threading.Thread(target=recover_with_successor)
+    recoverer.start()
+    assert recovery_attempted.wait(timeout=5)
+    try:
+        assert not recovery_acquired.wait(timeout=0.1)
+    finally:
+        finish_write.set()
+        writer.join(timeout=5)
+        recoverer.join(timeout=5)
+
+    assert not writer.is_alive()
+    assert not recoverer.is_alive()
+    assert not errors
+    assert recovery_acquired.is_set()
+    assert RunState.load(run_id, tmp_path).error == "successor"
+
+
+def test_terminal_state_is_saved_before_lease_release(tmp_path, monkeypatch):
+    from specify_cli.workflows.engine import RunState, WorkflowEngine
+    from specify_cli.workflows.lease import RunLeaseManager
+
+    state = RunState(
+        run_id="lease-release-race",
+        workflow_id="lease-test",
+        project_root=tmp_path,
+    )
+    state.save()
+    manager = RunLeaseManager(state.runs_dir)
+    lease = manager.acquire()
+    state.set_execution_lease_guard(lease.ownership_guard)
+    state.error = "former terminal state"
+
+    original_release = lease.release
+
+    def release_then_write_successor():
+        assert original_release()
+        successor = manager.acquire()
+        new_state = RunState.load(state.run_id, tmp_path)
+        new_state.set_execution_lease_guard(successor.ownership_guard)
+        new_state.error = "successor state"
+        new_state.save()
+        assert successor.release()
+        return True
+
+    monkeypatch.setattr(lease, "release", release_then_write_successor)
+    WorkflowEngine._release_execution_lease(state, lease)
+
+    assert RunState.load(state.run_id, tmp_path).error == "successor state"

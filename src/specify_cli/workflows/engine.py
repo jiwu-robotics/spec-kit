@@ -18,6 +18,7 @@ import tempfile
 import threading
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -753,14 +754,9 @@ class RunState:
                 self.step_results[step_id]["output"] = output
 
     def set_execution_lease_guard(self, guard: Any) -> None:
-        """Require *guard* to approve every state write while a run is active."""
+        """Require *guard* to approve every state commit while a run is active."""
         with self._lock:
             self._execution_lease_guard = guard
-
-    def clear_execution_lease_guard(self) -> None:
-        """Allow final state cleanup after this process released its lease."""
-        with self._lock:
-            self._execution_lease_guard = None
 
     def record_lease_event(self, event: dict[str, Any]) -> None:
         """Record an auditable ownership transition in persisted run state."""
@@ -782,8 +778,9 @@ class RunState:
 
         Held under the run lock and written atomically (temp file + ``os.replace``)
         so a concurrent fan-out can neither mutate ``step_results`` mid-serialization
-        nor leave a reader observing a half-written file. Racing writers only
-        contend to be last; they never corrupt.
+        nor leave a reader observing a half-written file. When a lease is active,
+        its cross-process lock spans the state write and observer projection so an
+        expired owner cannot overwrite a successor's committed state.
         """
         runs_dir = self.runs_dir
         runs_dir.mkdir(parents=True, exist_ok=True)
@@ -791,39 +788,45 @@ class RunState:
         observer: Any = None
         snapshot: dict[str, Any] | None = None
         with self._lock:
-            if self._execution_lease_guard is not None:
+            owner_guard = (
                 self._execution_lease_guard()
-            # Stamp updated_at inside the lock so the timestamp matches the
-            # snapshot this thread serializes (concurrent savers don't race it).
-            self.updated_at = datetime.now(timezone.utc).isoformat()
-            state_data = {
-                "run_id": self.run_id,
-                "workflow_id": self.workflow_id,
-                "installed_workflow_id": self.installed_workflow_id,
-                "installed_registry_root": self.installed_registry_root,
-                "status": self.status.value,
-                "current_step_index": self.current_step_index,
-                "current_step_id": self.current_step_id,
-                "step_results": self.step_results,
-                "workflow_dir": self.workflow_dir,
-                "created_at": self.created_at,
-                "updated_at": self.updated_at,
-                "error": self.error,
-                "active_resumer": self.active_resumer,
-                "lease_history": self.lease_history,
-                "remediation": self.remediation,
-            }
-            self._atomic_write_json(runs_dir / "state.json", state_data)
-            self._atomic_write_json(runs_dir / "inputs.json", {"inputs": self.inputs})
-            observer = self._persist_observer
-            # ``state_data`` contains references to mutable step results.
-            # Reparse JSON so an observer sees exactly the committed snapshot,
-            # not later concurrent mutations of those references.
-            if observer is not None:
-                snapshot = json.loads(json.dumps(state_data))
-
-        if observer is not None and snapshot is not None:
-            observer(snapshot)
+                if self._execution_lease_guard is not None
+                else nullcontext()
+            )
+        with owner_guard:
+            with self._lock:
+                # Stamp updated_at inside the lock so the timestamp matches the
+                # snapshot this thread serializes (concurrent savers don't race it).
+                self.updated_at = datetime.now(timezone.utc).isoformat()
+                state_data = {
+                    "run_id": self.run_id,
+                    "workflow_id": self.workflow_id,
+                    "installed_workflow_id": self.installed_workflow_id,
+                    "installed_registry_root": self.installed_registry_root,
+                    "status": self.status.value,
+                    "current_step_index": self.current_step_index,
+                    "current_step_id": self.current_step_id,
+                    "step_results": self.step_results,
+                    "workflow_dir": self.workflow_dir,
+                    "created_at": self.created_at,
+                    "updated_at": self.updated_at,
+                    "error": self.error,
+                    "active_resumer": self.active_resumer,
+                    "lease_history": self.lease_history,
+                    "remediation": self.remediation,
+                }
+                self._atomic_write_json(runs_dir / "state.json", state_data)
+                self._atomic_write_json(
+                    runs_dir / "inputs.json", {"inputs": self.inputs}
+                )
+                observer = self._persist_observer
+                # ``state_data`` contains references to mutable step results.
+                # Reparse JSON so an observer sees exactly the committed snapshot,
+                # not later concurrent mutations of those references.
+                if observer is not None:
+                    snapshot = json.loads(json.dumps(state_data))
+            if observer is not None and snapshot is not None:
+                observer(snapshot)
 
     @staticmethod
     def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -1020,7 +1023,7 @@ class WorkflowEngine:
         lease = RunLeaseManager(state.runs_dir).acquire(
             recovery_reason=recovery_reason
         )
-        state.set_execution_lease_guard(lease.assert_owned)
+        state.set_execution_lease_guard(lease.ownership_guard)
         state.active_resumer = dict(lease.record)
         state.record_lease_event(
             {
@@ -1039,13 +1042,8 @@ class WorkflowEngine:
 
     @staticmethod
     def _release_execution_lease(state: RunState, lease: RunLease) -> None:
-        """Release an owned lease and make its terminal state observable."""
+        """Persist terminal state before releasing ownership."""
         lease.stop_heartbeat()
-        if not lease.release():
-            # Another process has reclaimed an expired lease.  It is unsafe for
-            # this process to write even a final cleanup record now.
-            return
-        state.clear_execution_lease_guard()
         state.active_resumer = None
         state.record_lease_event(
             {
@@ -1054,7 +1052,13 @@ class WorkflowEngine:
                 "owner_nonce": lease.owner_nonce,
             }
         )
-        state.save()
+        try:
+            state.save()
+        except RunLeaseLostError:
+            # A reclaimed owner cannot persist cleanup or terminal state.
+            return
+        finally:
+            lease.release()
 
     @staticmethod
     def _configure_state_observer(
