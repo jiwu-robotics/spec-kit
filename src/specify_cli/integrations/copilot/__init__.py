@@ -205,7 +205,7 @@ class CopilotIntegration(IntegrationBase):
                     manifest_files = IntegrationManifest.load(
                         self.key, Path(project_root)
                     ).files
-                except (OSError, ValueError):
+                except (OSError, RuntimeError, ValueError):
                     manifest_files = None
                 if manifest_files is not None and any(
                     path.startswith(".github/skills/speckit-")
@@ -246,6 +246,15 @@ class CopilotIntegration(IntegrationBase):
             if has_managed_commands and not has_managed_skills:
                 return False
         return True
+
+    def is_multi_install_safe(
+        self,
+        *,
+        project_root: Path | None = None,
+        parsed_options: dict[str, Any] | None = None,
+    ) -> bool:
+        """Allow co-installation only for Copilot's isolated Skills layout."""
+        return self.is_skills_mode(parsed_options, project_root)
 
     def invoke_separator_for_mode(self, skills_enabled: bool) -> str:
         """Skills projects render ``/speckit-<cmd>``; commands use ``.``.
