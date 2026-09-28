@@ -940,6 +940,21 @@ def _workflow_run_payload(state: Any) -> dict[str, Any]:
     error = _failed_step_error(state)
     if error is not None:
         payload["error"] = error
+    runs_dir = getattr(state, "runs_dir", None)
+    if isinstance(runs_dir, Path):
+        try:
+            from .lease import read_run_lease
+
+            active_resumer = read_run_lease(runs_dir)
+        except (OSError, ValueError):
+            active_resumer = None
+    else:
+        active_resumer = getattr(state, "active_resumer", None)
+    if active_resumer is not None:
+        payload["active_resumer"] = active_resumer
+    lease_history = getattr(state, "lease_history", None)
+    if lease_history:
+        payload["lease_history"] = lease_history
     return payload
 
 
