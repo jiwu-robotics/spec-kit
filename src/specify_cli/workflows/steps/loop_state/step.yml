@@ -1,0 +1,6 @@
+step:
+  id: loop-state
+  name: Loop State Adapter
+  version: "1.0.0"
+  type_key: loop-state
+  description: Validates loop inputs and projects durable loop evidence into machine-readable workflow state.

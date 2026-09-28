@@ -1,0 +1,148 @@
+schema_version: "1.0"
+workflow:
+  id: "speckit-loop"
+  name: "Governed Spec Kit Loop"
+  version: "1.0.0"
+  author: "jiwu-robotics"
+  description: "Runs SDD with specification, plan, and completion approvals plus bounded loop verification."
+  state_observer:
+    type: loop-state
+    variant: governed
+
+requires:
+  speckit_version: ">=1.0.2.dev0"
+  integrations:
+    any: ["codex"]
+
+inputs:
+  spec:
+    type: string
+    required: true
+    prompt: "Describe the feature to build"
+  integration:
+    type: string
+    default: "auto"
+    enum: ["auto", "codex"]
+    prompt: "Integration to use; auto resolves the initialized integration"
+  spec_verdict:
+    type: string
+    default: ""
+    enum: ["", "approve", "reject"]
+    prompt: "Specification review decision when resuming"
+  plan_verdict:
+    type: string
+    default: ""
+    enum: ["", "approve", "reject"]
+    prompt: "Plan review decision when resuming"
+  completion_verdict:
+    type: string
+    default: ""
+    enum: ["", "approve", "reject"]
+    prompt: "Completion sign-off decision when resuming"
+  remediation_note:
+    type: string
+    default: ""
+    prompt: "Required corrective-work note when resuming a failed stage"
+
+steps:
+  - id: validate-input
+    type: loop-state
+    action: validate-input
+    variant: governed
+
+  - id: specify
+    command: speckit.specify
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: initialize-loop-state
+    type: loop-state
+    action: initialize
+    variant: governed
+
+  - id: review-spec
+    type: gate
+    message: "Review the generated specification before planning."
+    options: [approve, reject]
+    on_reject: abort
+    verdict_input: spec_verdict
+
+  - id: plan
+    command: speckit.plan
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: review-plan
+    type: gate
+    message: "Review the implementation plan before task generation."
+    options: [approve, reject]
+    on_reject: abort
+    verdict_input: plan_verdict
+
+  - id: tasks
+    command: speckit.tasks
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: define-loop
+    command: speckit.loop.define
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: repeat-maker-check
+    type: do-while
+    condition: "{{ steps.evaluate-loop.output.next_action == 'maker' }}"
+    max_iterations: 8
+    steps:
+      - id: maker-loop
+        command: speckit.loop.run
+        integration: "{{ inputs.integration }}"
+      - id: checker-loop
+        command: speckit.loop.check
+        integration: "{{ inputs.integration }}"
+      - id: evaluate-loop
+        type: loop-state
+        action: evaluate
+        variant: governed
+
+  - id: route-loop-outcome
+    type: switch
+    expression: "{{ steps.evaluate-loop.output.next_action }}"
+    cases:
+      completion-signoff:
+        - id: guard-loop
+          command: speckit.loop.guard
+          integration: "{{ inputs.integration }}"
+    default:
+      - id: enforce-loop-outcome
+        type: loop-state
+        action: enforce
+        variant: governed
+
+  - id: review-completion
+    type: gate
+    message: "All checker evidence and debt records must be reviewed. Approve to record governed human sign-off."
+    options: [approve, reject]
+    on_reject: abort
+    verdict_input: completion_verdict
+
+  - id: record-governed-signoff
+    type: prompt
+    integration: "{{ inputs.integration }}"
+    timeout: 300
+    prompt: |
+      The human supplied completion_verdict={{ inputs.completion_verdict }} for
+      workflow run {{ context.run_id }}. Treat completion_verdict=approve as the
+      governed human sign-off. Record its source, timestamp, run ID, and completion
+      stage only after confirming every loop criterion has independent checker-pass
+      evidence and no blocking comprehension debt is open. If a condition is unmet,
+      leave the outcome incomplete and state the next action; never fabricate a sign-off.
+
+  - id: record-loop-state-signoff
+    type: loop-state
+    action: record-signoff
+    variant: governed
