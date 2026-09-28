@@ -5,9 +5,18 @@ from __future__ import annotations
 import pytest
 
 
-def test_failed_workflow_requires_and_persists_remediation_note(tmp_path):
-    from specify_cli.workflows.base import RunStatus
+def test_failed_workflow_requires_and_persists_remediation_note(tmp_path, monkeypatch):
+    from specify_cli.workflows import STEP_REGISTRY
+    from specify_cli.workflows.base import RunStatus, StepBase, StepResult
     from specify_cli.workflows.engine import RunState, WorkflowEngine
+
+    class RemediationStep(StepBase):
+        type_key = "test-remediation-step"
+
+        def execute(self, config, context):
+            return StepResult(output={})
+
+    monkeypatch.setitem(STEP_REGISTRY, RemediationStep.type_key, RemediationStep())
 
     state = RunState(run_id="failed-run", workflow_id="remediation-wf", project_root=tmp_path)
     state.status = RunStatus.FAILED
@@ -27,7 +36,9 @@ inputs:
   remediation_note:
     type: string
     default: ""
-steps: []
+steps:
+  - id: failed-step
+    type: test-remediation-step
 """,
         encoding="utf-8",
     )

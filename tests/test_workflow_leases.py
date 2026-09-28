@@ -74,10 +74,21 @@ def test_status_payload_reads_the_live_active_resumer(tmp_path):
         assert owner.release()
 
 
-def test_engine_requires_reason_to_recover_a_stale_running_run(tmp_path):
-    from specify_cli.workflows.base import RunStatus
+def test_engine_requires_reason_to_recover_a_stale_running_run(
+    tmp_path, monkeypatch
+):
+    from specify_cli.workflows import STEP_REGISTRY
+    from specify_cli.workflows.base import RunStatus, StepBase, StepResult
     from specify_cli.workflows.engine import RunState, WorkflowEngine
     from specify_cli.workflows.lease import RunLeaseManager
+
+    class RecoveryStep(StepBase):
+        type_key = "test-lease-recovery-step"
+
+        def execute(self, config, context):
+            return StepResult(output={})
+
+    monkeypatch.setitem(STEP_REGISTRY, RecoveryStep.type_key, RecoveryStep())
 
     state = RunState(run_id="interrupted-run", workflow_id="lease-test", project_root=tmp_path)
     state.status = RunStatus.RUNNING
@@ -89,7 +100,9 @@ workflow:
   id: "lease-test"
   name: "Lease test"
   version: "1.0.0"
-steps: []
+steps:
+  - id: recover
+    type: test-lease-recovery-step
 """,
         encoding="utf-8",
     )
