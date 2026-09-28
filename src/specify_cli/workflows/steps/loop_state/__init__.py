@@ -7,13 +7,6 @@ from typing import Any
 
 from specify_cli.workflows.base import StepBase, StepContext, StepResult, StepStatus
 
-from .state_adapter import (
-    LoopStateError,
-    sync_lifecycle_state,
-    sync_loop_state,
-    validate_new_run_inputs,
-)
-
 
 class LoopStateStep(StepBase):
     """Project-local bridge from loop evidence to workflow-safe decisions."""
@@ -38,12 +31,20 @@ class LoopStateStep(StepBase):
         project_root: str,
     ) -> None:
         """Keep the durable loop sidecar aligned with native lifecycle writes."""
+        from .state_adapter import LoopStateError, sync_lifecycle_state
+
         variant = config.get("variant")
         if variant not in {"governed", "yolo"}:
             raise LoopStateError("State observer requires variant governed or yolo.")
         sync_lifecycle_state(Path(project_root), state, variant=variant)
 
     def execute(self, config: dict[str, Any], context: StepContext) -> StepResult:
+        from .state_adapter import (
+            LoopStateError,
+            sync_loop_state,
+            validate_new_run_inputs,
+        )
+
         action = config.get("action")
         variant = config.get("variant")
         if action not in {"validate-input", "initialize", "evaluate", "record-signoff", "enforce"}:

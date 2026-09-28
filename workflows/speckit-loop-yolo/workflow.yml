@@ -62,7 +62,7 @@ steps:
     command: speckit.loop.define
     integration: "{{ inputs.integration }}"
     input:
-      args: "{{ inputs.spec }}"
+      args: "{{ inputs.spec }} guard.require_human_signoff=false loop.done_requires_checker_pass=true guard.block_done_on_open_debt=true"
 
   - id: repeat-maker-check
     type: do-while

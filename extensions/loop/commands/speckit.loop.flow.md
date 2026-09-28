@@ -42,11 +42,21 @@ $speckit-loop-flow run_id=RUN_ID -i plan_verdict=approve
    Keep each input as a distinct argument. Never interpolate feature text,
    agent output, or workflow-state contents into a shell command.
 3. For `run_id`, first use `specify workflow status RUN_ID --json`, then use
-   `python3 .specify/workflows/steps/loop-state/state_adapter.py --status RUN_ID`
-   when the adapter state exists. Report the native operational status and the
-   separate durable outcome; do not resume an `incomplete` or `incompatible`
-   outcome as if it were complete. If a run is `running`, reject the request
-   without changing state. The pinned engine atomically claims its active-resumer lease; the active resumer lock precedes a `running` transition. For an expired lease, require a factual `--recover-stale-lease` reason and report the recorded recovery evidence from JSON status.
+   the installed package's built-in adapter module when its state exists:
+
+   ```bash
+   python3 -m specify_cli.workflows.steps.loop_state.state_adapter --status RUN_ID
+   ```
+
+   Run this with a Python environment that has the `specify-cli` package installed;
+   the module reads the workflow run files from the current project by default.
+   Report the native operational status and the separate durable outcome; do not
+   resume an `incomplete` or `incompatible` outcome as if it were complete. If a
+   run is `running`, reject the request without changing state. The pinned engine
+   atomically claims its active-resumer lease; the active resumer lock precedes a
+   `running` transition. For an expired lease, require a factual
+   `--recover-stale-lease` reason and report the recorded recovery evidence from
+   JSON status.
 4. Resume only paused or failed runs using `specify workflow resume RUN_ID` with
    the exact applicable verdict or remediation input. A retry of a failed stage
    must include a non-empty `remediation_note` and must preserve prior inputs

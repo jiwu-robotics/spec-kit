@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 CRITERION_RE = re.compile(r"^\|\s*(D[A-Za-z0-9_-]+)\s*\|.*\|\s*([^|]+)\|\s*$")
 MAX_ITERATIONS_RE = re.compile(r"^- Max iterations:\s*(\d+)\s*$", re.MULTILINE)
@@ -95,6 +97,72 @@ def _feature_directory(project_root: Path) -> Path:
     except ValueError as exc:
         raise LoopStateError("feature_directory must remain inside the project root.") from exc
     return feature_dir
+
+
+def _configured_loop_directory(project_root: Path, feature_dir: Path) -> Path:
+    """Resolve the configured state directory below the active feature."""
+    config_path = (
+        project_root / ".specify" / "extensions" / "loop" / "loop-config.yml"
+    )
+    if config_path.is_file():
+        try:
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise LoopStateError(
+                f"Cannot read loop configuration {config_path}: {exc}"
+            ) from exc
+    else:
+        config = {}
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise LoopStateError("Loop configuration must be a YAML mapping.")
+
+    state_config = config.get("state", {})
+    if state_config is None:
+        state_config = {}
+    if not isinstance(state_config, dict):
+        raise LoopStateError("Loop state configuration must be a YAML mapping.")
+    directory = state_config.get("directory", "loop")
+    if not isinstance(directory, str) or not directory.strip():
+        raise LoopStateError("Loop state directory must be a non-empty relative path.")
+    relative_directory = Path(directory)
+    if relative_directory.is_absolute():
+        raise LoopStateError("Loop state directory must be relative to the feature directory.")
+
+    resolved_feature_dir = feature_dir.resolve()
+    loop_dir = (resolved_feature_dir / relative_directory).resolve()
+    try:
+        loop_dir.relative_to(resolved_feature_dir)
+    except ValueError as exc:
+        raise LoopStateError(
+            "Loop state directory must remain inside the feature directory."
+        ) from exc
+    return loop_dir
+
+
+def _stored_loop_directory(
+    project_root: Path,
+    feature_dir: Path,
+    prior: dict[str, Any] | None,
+) -> Path:
+    """Keep evaluating against the path chosen when this run was initialized."""
+    stored_directory = None if prior is None else prior.get("loop_directory")
+    if stored_directory is None:
+        return _configured_loop_directory(project_root, feature_dir)
+    if not isinstance(stored_directory, str) or not stored_directory.strip():
+        raise LoopStateError("Stored loop_directory must be a relative path.")
+    relative_directory = Path(stored_directory)
+    if relative_directory.is_absolute():
+        raise LoopStateError("Stored loop_directory must be a relative path.")
+    loop_dir = (project_root / relative_directory).resolve()
+    try:
+        loop_dir.relative_to(feature_dir.resolve())
+    except ValueError as exc:
+        raise LoopStateError(
+            "Stored loop_directory must remain inside the feature directory."
+        ) from exc
+    return loop_dir
 
 
 def _section(text: str, heading: str) -> str:
@@ -269,6 +337,7 @@ def sync_lifecycle_state(
     ``state.json`` write. It does not modify native workflow state, so a
     competing resumer rejected before a native write cannot alter the sidecar.
     """
+    project_root = project_root.resolve()
     run_id = native.get("run_id")
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise LoopStateError("Workflow run ID is invalid.")
@@ -287,6 +356,11 @@ def sync_lifecycle_state(
             feature_dir = _feature_directory(project_root)
         except LoopStateError:
             feature_dir = None
+        loop_dir = (
+            None
+            if feature_dir is None
+            else _configured_loop_directory(project_root, feature_dir)
+        )
         state = _new_state(
             project_root=project_root,
             run_id=run_id,
@@ -295,7 +369,7 @@ def sync_lifecycle_state(
             outcome=outcome,
             next_action=next_action,
             feature_dir=feature_dir,
-            loop_dir=None if feature_dir is None else feature_dir / "loop",
+            loop_dir=loop_dir,
             detail=detail,
             operational_status=status,
             current_step_id=native.get("current_step_id"),
@@ -340,6 +414,7 @@ def sync_loop_state(
     completion_verdict: Any = "",
 ) -> dict[str, Any]:
     """Write and return the adapter's durable workflow outcome projection."""
+    project_root = project_root.resolve()
     if not RUN_ID_RE.fullmatch(run_id):
         raise LoopStateError("Workflow run ID is invalid.")
     if variant not in {"governed", "yolo"}:
@@ -352,6 +427,7 @@ def sync_loop_state(
     prior = _read_prior_state(state_path)
     if action == "initialize":
         feature_dir = _feature_directory(project_root)
+        loop_dir = _configured_loop_directory(project_root, feature_dir)
         state = _new_state(
             project_root=project_root,
             run_id=run_id,
@@ -360,7 +436,7 @@ def sync_loop_state(
             outcome="pending",
             next_action="define-loop",
             feature_dir=feature_dir,
-            loop_dir=feature_dir / "loop",
+            loop_dir=loop_dir,
             detail="Awaiting a defined loop contract.",
         )
         state = _preserve_lifecycle_fields(state, prior)
@@ -368,7 +444,7 @@ def sync_loop_state(
         return state
 
     feature_dir = _feature_directory(project_root)
-    loop_dir = feature_dir / "loop"
+    loop_dir = _stored_loop_directory(project_root, feature_dir, prior)
     loop_path = loop_dir / "loop.md"
     debt_path = loop_dir / "debt.md"
     verdict_path = loop_dir / "verdicts.md"
