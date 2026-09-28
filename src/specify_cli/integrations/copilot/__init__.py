@@ -18,6 +18,8 @@ agents:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import json
 import os
 import shutil
@@ -203,7 +205,7 @@ class CopilotIntegration(IntegrationBase):
                     manifest_files = IntegrationManifest.load(
                         self.key, Path(project_root)
                     ).files
-                except (OSError, RuntimeError, ValueError):
+                except (OSError, ValueError):
                     manifest_files = None
                 if manifest_files is not None and any(
                     path.startswith(".github/skills/speckit-")
@@ -244,15 +246,6 @@ class CopilotIntegration(IntegrationBase):
             if has_managed_commands and not has_managed_skills:
                 return False
         return True
-
-    def is_multi_install_safe(
-        self,
-        *,
-        project_root: Path | None = None,
-        parsed_options: dict[str, Any] | None = None,
-    ) -> bool:
-        """Allow co-installation only for Copilot's isolated Skills layout."""
-        return self.is_skills_mode(parsed_options, project_root)
 
     def invoke_separator_for_mode(self, skills_enabled: bool) -> str:
         """Skills projects render ``/speckit-<cmd>``; commands use ``.``.
@@ -314,7 +307,11 @@ class CopilotIntegration(IntegrationBase):
         *,
         model: str | None = None,
         output_json: bool = True,
+        integration_args: Sequence[str] | None = None,
+        integration_options: Mapping[str, Any] | None = None,
+        project_root: Path | None = None,
     ) -> list[str] | None:
+        self.validate_runtime_config(integration_args, integration_options)
         # GitHub Copilot CLI uses ``copilot -p "prompt"`` for
         # non-interactive mode.  --yolo enables all permissions
         # (tools, paths, and URLs) so the agent can perform file
@@ -357,6 +354,8 @@ class CopilotIntegration(IntegrationBase):
         model: str | None = None,
         timeout: int = 600,
         stream: bool = True,
+        integration_args: Sequence[str] | None = None,
+        integration_options: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Dispatch via ``--agent speckit.<stem>`` instead of slash-commands.
 
@@ -368,6 +367,8 @@ class CopilotIntegration(IntegrationBase):
         (``/speckit-<stem>``).
         """
         import subprocess
+
+        self.validate_runtime_config(integration_args, integration_options)
 
         stem = command_name
         if stem.startswith("speckit."):

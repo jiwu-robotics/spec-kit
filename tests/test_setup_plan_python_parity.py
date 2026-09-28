@@ -66,26 +66,6 @@ def test_python_fresh_copy_matches_bash(tmp_path: Path) -> None:
 
 
 @requires_bash
-def test_python_paths_only_matches_bash_without_materializing_plan(
-    tmp_path: Path,
-) -> None:
-    repo_a = _setup_repo(tmp_path, "proj-a")
-    repo_b = _setup_repo(tmp_path, "proj-b")
-
-    bash = run(bash_cmd(repo_a, SCRIPT, "--json", "--paths-only"), repo_a)
-    py = run(py_cmd(repo_b, SCRIPT, "--json", "--paths-only"), repo_b)
-
-    assert py.returncode == bash.returncode == 0
-    assert normalize_repo_paths(py.stdout, repo_b) == normalize_repo_paths(
-        bash.stdout, repo_a
-    )
-    assert normalize_repo_paths(py.stderr, repo_b) == normalize_repo_paths(
-        bash.stderr, repo_a
-    )
-    for repo in (repo_a, repo_b):
-        assert not (repo / "specs" / "001-my-feature" / "plan.md").exists()
-
-@requires_bash
 def test_all_variants_materialize_composed_plan_template(tmp_path: Path) -> None:
     repos = [
         _setup_repo(tmp_path, "bash"),
@@ -152,7 +132,7 @@ def test_python_existing_plan_matches_bash(repo: Path, args: tuple[str, ...]) ->
 
 @requires_bash
 @pytest.mark.skipif(not HAS_POWERSHELL, reason="no PowerShell available")
-def test_all_variants_ignore_extra_arguments(tmp_path: Path) -> None:
+def test_all_variants_reject_unknown_options(tmp_path: Path) -> None:
     repos = [
         _setup_repo(tmp_path, "bash"),
         _setup_repo(tmp_path, "powershell"),
@@ -163,13 +143,15 @@ def test_all_variants_ignore_extra_arguments(tmp_path: Path) -> None:
     ps = run(ps_cmd(repos[1], SCRIPT, "-Json", "--bogus"), repos[1])
     py = run(py_cmd(repos[2], SCRIPT, "--json", "--bogus"), repos[2])
 
-    assert bash.returncode == ps.returncode == py.returncode == 0
-    assert normalize_repo_paths(bash.stdout, repos[0]) == normalize_repo_paths(
-        ps.stdout, repos[1]
-    ) == normalize_repo_paths(py.stdout, repos[2])
-    assert normalize_repo_paths(bash.stderr, repos[0]) == normalize_repo_paths(
-        ps.stderr, repos[1]
-    ) == normalize_repo_paths(py.stderr, repos[2])
+    assert bash.returncode == ps.returncode == py.returncode == 1
+    assert bash.stdout == ps.stdout == py.stdout == ""
+    assert bash.stderr == ps.stderr == py.stderr == (
+        "ERROR: Unknown option '--bogus'\n"
+    )
+    assert all(
+        not (current / "specs" / "001-my-feature" / "plan.md").exists()
+        for current in repos
+    )
 
 
 @requires_bash
@@ -392,3 +374,57 @@ def test_python_json_output_matches_powershell(repo: Path) -> None:
 
     assert py.returncode == ps.returncode == 0
     assert json_stdout(py) == json_stdout(ps)
+
+
+@requires_bash
+@pytest.mark.parametrize("args", [("--json",), ()], ids=["json", "text"])
+def test_all_variants_emit_feature_dir_not_specs_dir(
+    repo: Path, args: tuple[str, ...]
+) -> None:
+    r"""Pin the output key name, not just cross-port agreement.
+
+    The other tests here compare the ports against each other, so all three
+    could regress to ``SPECS_DIR`` together and still pass. This asserts the
+    contract absolutely: the key is ``FEATURE_DIR``, it carries the feature
+    directory rather than the specs root, and the old name is gone.
+    ``SPECS_DIR`` means the specs root in ``create-new-feature.sh``, so
+    re-emitting it here would reintroduce one name for two paths.
+
+    The value is matched by suffix because the ports legitimately differ in
+    path flavour -- under MSYS bash reports ``/tmp/...`` where the Python and
+    PowerShell ports report ``C:\...``. The suffix still separates
+    ``specs/001-my-feature`` from a bare ``specs``, which is the regression
+    this guards.
+    """
+    json_mode = args == ("--json",)
+    suffix = ("specs", "001-my-feature")
+
+    commands = [bash_cmd(repo, SCRIPT, *args), py_cmd(repo, SCRIPT, *args)]
+    if HAS_POWERSHELL:
+        commands.append(ps_cmd(repo, SCRIPT, *(("-Json",) if json_mode else ())))
+
+    for cmd in commands:
+        result = run(cmd, repo)
+        assert result.returncode == 0, result.stderr
+        assert "SPECS_DIR" not in result.stdout
+
+        if json_mode:
+            payload = json_stdout(result)
+            assert isinstance(payload, dict)
+            assert sorted(payload) == [
+                "BRANCH",
+                "FEATURE_DIR",
+                "FEATURE_SPEC",
+                "IMPL_PLAN",
+            ]
+            value = payload["FEATURE_DIR"]
+        else:
+            lines = dict(
+                line.split(": ", 1)
+                for line in result.stdout.splitlines()
+                if ": " in line
+            )
+            assert "FEATURE_DIR" in lines
+            value = lines["FEATURE_DIR"]
+
+        assert tuple(value.replace("\\", "/").rstrip("/").split("/")[-2:]) == suffix

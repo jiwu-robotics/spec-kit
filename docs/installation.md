@@ -6,7 +6,7 @@
 - AI coding agent: [Claude Code](https://www.anthropic.com/claude-code), [GitHub Copilot](https://code.visualstudio.com/), [CodeBuddy CLI](https://www.codebuddy.cn/docs/cli/installation), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Pi Coding Agent](https://pi.dev), or [Oh My Pi](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent)
 - [uv](https://docs.astral.sh/uv/) for package management (recommended) or [pipx](https://pipx.pypa.io/) for persistent installation
 - [Python 3.11+](https://www.python.org/downloads/)
-- [Git](https://git-scm.com/downloads) _(optional — required only when the git extension is enabled)_
+- [Git](https://git-scm.com/downloads) *(optional — required only when the git extension is enabled)*
 
 ## Installation
 
@@ -95,6 +95,27 @@ specify init <project_name> --script ps
 specify init <project_name> --script py
 ```
 
+### CI and AI Agent Harnesses
+
+For environments without a keyboard, or a PTY that cannot send arrow keys, pass
+`--non-interactive` so initialization never waits on a picker:
+
+```bash
+specify init my-project --non-interactive --ignore-agent-tools
+```
+
+`--ignore-agent-tools` skips the agent executable check when the agent will run
+elsewhere; omit it when you want that check. Non-interactive initialization
+defaults to Copilot unless you select another integration explicitly.
+
+For a non-empty directory, `--force` acknowledges the merge warning. Review the
+[existing-project guide](guides/existing-projects.md) and commit or back up local
+changes before initializing:
+
+```bash
+specify init --here --force --non-interactive --integration claude
+```
+
 ### Ignore Agent Tools Check
 
 If you prefer to get the templates without checking for the right tools:
@@ -133,6 +154,15 @@ Scripts are installed into a variant subdirectory matching the chosen script typ
 - `.specify/scripts/bash/` — contains `.sh` scripts (default on Linux/macOS)
 - `.specify/scripts/powershell/` — contains `.ps1` scripts (default on Windows)
 - `.specify/scripts/python/` — contains `.py` scripts (chosen with `--script py`; also installs the platform shell fallback)
+
+## Choose a Process
+
+After initialization, launch your coding agent in the project directory and
+follow the [SDD quickstart](quickstart.md),
+[bug-fixing quickstart](guides/bugfix.md), or
+[idea assessment quickstart](guides/assessment.md). These are independent entry
+points. SDD is available immediately; the other guides show how to install their
+bundled, opt-in extensions.
 
 ## Troubleshooting
 

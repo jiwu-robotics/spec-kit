@@ -37,6 +37,7 @@ Consolidated prerequisite checking for Spec-Driven Development workflow.
 
 OPTIONS:
   --json              Output in JSON format
+  --require-spec      Require spec.md to exist (for analysis phase)
   --require-tasks     Require tasks.md to exist (for implementation phase)
   --include-tasks     Include tasks.md in AVAILABLE_DOCS list
   --paths-only        Only output path variables (no prerequisite validation)
@@ -59,6 +60,7 @@ EXAMPLES:
 @dataclass(frozen=True)
 class Args:
     json_mode: bool = False
+    require_spec: bool = False
     require_tasks: bool = False
     include_tasks: bool = False
     paths_only: bool = False
@@ -67,6 +69,7 @@ class Args:
 
 def _parse_args(argv: list[str]) -> Args:
     json_mode = False
+    require_spec = False
     require_tasks = False
     include_tasks = False
     paths_only = False
@@ -77,6 +80,8 @@ def _parse_args(argv: list[str]) -> Args:
         arg = argv[index]
         if arg == "--json":
             json_mode = True
+        elif arg == "--require-spec":
+            require_spec = True
         elif arg == "--require-tasks":
             require_tasks = True
         elif arg == "--include-tasks":
@@ -105,6 +110,7 @@ def _parse_args(argv: list[str]) -> Args:
 
     return Args(
         json_mode=json_mode,
+        require_spec=require_spec,
         require_tasks=require_tasks,
         include_tasks=include_tasks,
         paths_only=paths_only,
@@ -134,24 +140,20 @@ def _available_docs(paths: FeaturePaths, include_tasks: bool) -> list[str]:
     return docs
 
 
-def _print_paths_only(
-    paths: FeaturePaths,
-    json_mode: bool,
-    template_content: str | None,
-) -> None:
+def _print_paths_only(paths: FeaturePaths, json_mode: bool) -> None:
     if json_mode:
-        payload: dict[str, object] = {
-            "REPO_ROOT": str(paths.repo_root),
-            "BRANCH": paths.current_branch,
-            "FEATURE_DIR": str(paths.feature_dir),
-            "FEATURE_SPEC": str(paths.feature_spec),
-            "IMPL_PLAN": str(paths.impl_plan),
-            "TASKS": str(paths.tasks),
-            "AVAILABLE_DOCS": [],
-        }
-        if template_content is not None:
-            payload["TEMPLATE_CONTENT"] = template_content
-        sys.stdout.write(_json_line(payload))
+        sys.stdout.write(
+            _json_line(
+                {
+                    "REPO_ROOT": str(paths.repo_root),
+                    "BRANCH": paths.current_branch,
+                    "FEATURE_DIR": str(paths.feature_dir),
+                    "FEATURE_SPEC": str(paths.feature_spec),
+                    "IMPL_PLAN": str(paths.impl_plan),
+                    "TASKS": str(paths.tasks),
+                }
+            )
+        )
         return
 
     print(f"REPO_ROOT: {paths.repo_root}")
@@ -160,6 +162,7 @@ def _print_paths_only(
     print(f"FEATURE_SPEC: {paths.feature_spec}")
     print(f"IMPL_PLAN: {paths.impl_plan}")
     print(f"TASKS: {paths.tasks}")
+
 
 def _status_marker(ok: bool) -> str:
     """Return the status glyph, downgraded to ASCII when stdout cannot encode it.
@@ -213,25 +216,8 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: Failed to resolve feature paths", file=sys.stderr)
         return int(exc.code) if isinstance(exc.code, int) else 1
 
-    template_content = None
-    if args.template_name:
-        try:
-            template_content = resolve_template_content(
-                args.template_name, paths.repo_root
-            )
-        except TemplateResolutionError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        if template_content is None:
-            print(
-                f"ERROR: Could not resolve required {args.template_name} from "
-                f"the template override stack for {paths.repo_root}",
-                file=sys.stderr,
-            )
-            return 1
-
     if args.paths_only:
-        _print_paths_only(paths, args.json_mode, template_content)
+        _print_paths_only(paths, args.json_mode)
         return 0
 
     if not paths.feature_dir.is_dir():
@@ -250,6 +236,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    if args.require_spec and not paths.feature_spec.is_file():
+        print(f"ERROR: spec.md not found in {paths.feature_dir}", file=sys.stderr)
+        print(
+            f"Run {format_speckit_command('specify', paths.repo_root)} first to create the feature specification.",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.require_tasks and not paths.tasks.is_file():
         print(f"ERROR: tasks.md not found in {paths.feature_dir}", file=sys.stderr)
         print(
@@ -259,6 +253,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     docs = _available_docs(paths, args.include_tasks)
+    template_content = None
+    if args.template_name:
+        try:
+            template_content = resolve_template_content(
+                args.template_name, paths.repo_root
+            )
+        except TemplateResolutionError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        if template_content is None:
+            print(
+                f"ERROR: Could not resolve required {args.template_name} from "
+                f"the template override stack for {paths.repo_root}",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.json_mode:
         payload: dict[str, object] = {

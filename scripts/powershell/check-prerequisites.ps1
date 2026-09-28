@@ -9,6 +9,7 @@
 #
 # OPTIONS:
 #   -Json               Output in JSON format
+#   -RequireSpec        Require spec.md to exist (for analysis phase)
 #   -RequireTasks       Require tasks.md to exist (for implementation phase)
 #   -IncludeTasks       Include tasks.md in AVAILABLE_DOCS list
 #   -PathsOnly          Only output path variables (no validation)
@@ -18,6 +19,7 @@
 [CmdletBinding()]
 param(
     [switch]$Json,
+    [switch]$RequireSpec,
     [switch]$RequireTasks,
     [switch]$IncludeTasks,
     [switch]$PathsOnly,
@@ -36,6 +38,7 @@ Consolidated prerequisite checking for Spec-Driven Development workflow.
 
 OPTIONS:
   -Json               Output in JSON format
+  -RequireSpec        Require spec.md to exist (for analysis phase)
   -RequireTasks       Require tasks.md to exist (for implementation phase)
   -IncludeTasks       Include tasks.md in AVAILABLE_DOCS list
   -PathsOnly          Only output path variables (no prerequisite validation)
@@ -68,32 +71,17 @@ if ($PathsOnly) {
     $paths = Get-FeaturePathsEnv
 }
 
-$templateContent = $null
-if ($Template) {
-    $templateContent = Resolve-TemplateContent -TemplateName $Template -RepoRoot $paths.REPO_ROOT
-    if ($null -eq $templateContent) {
-        [Console]::Error.WriteLine("ERROR: Could not resolve required $Template from the template override stack for $($paths.REPO_ROOT)")
-        exit 1
-    }
-}
-
-
 # If paths-only mode, output paths and exit (no validation)
 if ($PathsOnly) {
     if ($Json) {
-        $result = [ordered]@{
+        [PSCustomObject]@{
             REPO_ROOT    = $paths.REPO_ROOT
             BRANCH       = $paths.CURRENT_BRANCH
             FEATURE_DIR  = $paths.FEATURE_DIR
             FEATURE_SPEC = $paths.FEATURE_SPEC
             IMPL_PLAN    = $paths.IMPL_PLAN
             TASKS        = $paths.TASKS
-            AVAILABLE_DOCS = @()
-        }
-        if ($Template) {
-            $result.TEMPLATE_CONTENT = $templateContent
-        }
-        [PSCustomObject]$result | ConvertTo-Json -Compress
+        } | ConvertTo-Json -Compress
     } else {
         Write-Output "REPO_ROOT: $($paths.REPO_ROOT)"
         Write-Output "BRANCH: $($paths.CURRENT_BRANCH)"
@@ -117,6 +105,14 @@ if (-not (Test-Path $paths.IMPL_PLAN -PathType Leaf)) {
     [Console]::Error.WriteLine("ERROR: plan.md not found in $($paths.FEATURE_DIR)")
     $planCommand = Format-SpecKitCommand -CommandName 'plan' -RepoRoot $paths.REPO_ROOT
     [Console]::Error.WriteLine("Run $planCommand first to create the implementation plan.")
+    exit 1
+}
+
+# Check for spec.md if required
+if ($RequireSpec -and -not (Test-Path $paths.FEATURE_SPEC -PathType Leaf)) {
+    [Console]::Error.WriteLine("ERROR: spec.md not found in $($paths.FEATURE_DIR)")
+    $specifyCommand = Format-SpecKitCommand -CommandName 'specify' -RepoRoot $paths.REPO_ROOT
+    [Console]::Error.WriteLine("Run $specifyCommand first to create the feature specification.")
     exit 1
 }
 
@@ -147,7 +143,14 @@ if ($IncludeTasks -and (Test-Path $paths.TASKS)) {
     $docs += 'tasks.md'
 }
 
-
+$templateContent = $null
+if ($Template) {
+    $templateContent = Resolve-TemplateContent -TemplateName $Template -RepoRoot $paths.REPO_ROOT
+    if ($null -eq $templateContent) {
+        [Console]::Error.WriteLine("ERROR: Could not resolve required $Template from the template override stack for $($paths.REPO_ROOT)")
+        exit 1
+    }
+}
 
 # Output results
 if ($Json) {

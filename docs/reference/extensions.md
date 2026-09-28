@@ -50,14 +50,30 @@ Removes an installed extension. Configuration files are backed up by default; us
 
 ```bash
 specify extension list
+specify extension list --json
 ```
 
 | Option        | Description                                        |
 | ------------- | -------------------------------------------------- |
 | `--available` | Show available (uninstalled) extensions            |
 | `--all`       | Show both installed and available extensions       |
+| `--json`      | Write installed extensions as JSON                 |
 
 Lists installed extensions with their status, version, and command counts.
+
+`--json` writes a JSON array to stdout. Every item has the keys `id`, `name`,
+`description`, `version`, `author`, `priority`, `enabled`, `source`, and
+`provides`. `author` is `null` when absent; `source` is `{"kind":"local"}`
+for local, legacy, or malformed provenance, or
+`{"kind":"catalog","catalog":"<catalog-name>"}` for a valid catalog source.
+Extension `provides` contains `commands`, `templates`, `scripts`, and `hooks`
+counts. `--available` and `--all` do not broaden JSON output beyond installed
+extensions. On success, `--json` writes exactly one array to stdout and exits
+0. A runtime failure after option parsing writes exactly one
+`{"error":"..."}` object to stderr and exits 1. If parsing raises a usage
+error and the raw `--json` token is present, it writes that JSON error object
+to stderr and preserves the usage exit code (normally 2). Without `--json`,
+including for help, the existing human-readable behavior is unchanged.
 
 ## Extension Info
 
@@ -74,6 +90,8 @@ specify extension update [<name>]
 ```
 
 Updates a specific extension, or all installed extensions if no name is given.
+
+Bundled extensions (such as `agent-context` and `git`) have no download URL; their updates install from the copy shipped with the running spec-kit release. When the catalog advertises a newer version than your spec-kit release ships, the update is reported as requiring a spec-kit upgrade first.
 
 ## Enable / Disable an Extension
 
@@ -108,10 +126,12 @@ Catalogs come in two kinds, and the distinction is a **security boundary**, not 
 > **Do not flip a discovery-only catalog to `install_allowed`.** That defeats the entire point of separating discovery from installation. There are two correct ways to install something you found via `community`:
 >
 > 1. **Install a single vetted extension directly** with `--from` (no catalog authoring needed). Get the candidate archive URL from `specify extension info <name>` — for a discovery-only entry it prints a "Candidate archive" URL. Review that release archive, then install it:
+>
 >    ```bash
 >    specify extension info <name>          # shows the candidate archive URL
 >    specify extension add <name> --from <archive-url>
 >    ```
+>
 >    Treat the URL as untrusted until you have vetted it — it comes from an unvetted catalog.
 > 2. **Curate your own catalog** you control and vet, and mark *that* catalog `install_allowed: true` — for when you want a governed, reusable install source (e.g. for an org).
 
@@ -137,6 +157,8 @@ specify extension catalog add <url>
 | `--description <text>`               | Optional description                               |
 
 Adds a catalog to the project's `.specify/extension-catalogs.yml`.
+
+Re-adding the same named catalog with identical settings succeeds without changing the configuration; different settings are rejected.
 
 ### Remove a Catalog
 
@@ -190,6 +212,7 @@ To set up configuration for a newly installed extension, copy the template:
 cp .specify/extensions/<ext>/<ext>-config.template.yml \
    .specify/extensions/<ext>/<ext>-config.yml
 ```
+
 ## Project Extension and Hook Configuration
 
 Spec Kit stores project-level extension registration and hook configuration in:
@@ -197,6 +220,7 @@ Spec Kit stores project-level extension registration and hook configuration in:
 ```text
 .specify/extensions.yml
 ```
+
 The file contains installed extensions, global settings, and hooks that are surfaced before or after Spec Kit commands.
 
 ```yaml
@@ -244,6 +268,7 @@ Each hook entry supports the following fields:
 | `prompt` | Message shown when asking whether to run an optional hook. |
 | `description` | Human-readable explanation of what the hook does. |
 | `condition` | Optional expression evaluated by `HookExecutor` (using `config.<path>` or `env.<VAR>` with `is set`, `==`, or `!=`). Current command templates do not evaluate conditions and skip hooks with a non-empty condition. |
+
 Hook event names identify when a hook is invoked. They generally use `before_<command>` or `after_<command>`, such as `before_implement`, `after_implement`, `before_tasks`, and `after_tasks`.
 
 Extension manifests reject invalid hook priorities during installation. For existing `.specify/extensions.yml` entries, `HookExecutor.get_hooks_for_event()` sorts with `normalize_priority()`: missing values, booleans, non-numeric values rejected by `int()`, and values less than `1` fall back to `10`; numeric strings and finite floats are coerced with `int()`, while non-finite floats are unsupported and may fail instead of falling back.

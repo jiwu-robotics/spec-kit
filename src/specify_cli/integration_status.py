@@ -465,11 +465,8 @@ def build_integration_status_report(project_root: Path) -> dict[str, Any]:
             )
 
     unsafe = [
-        key
-        for key in known_installed
-        if not INTEGRATION_REGISTRY[key].is_multi_install_safe(
-            project_root=project_root
-        )
+        key for key in known_installed
+        if not getattr(INTEGRATION_REGISTRY[key], "multi_install_safe", False)
     ]
     if len(check_installed_keys) > 1:
         unsafe.extend(unknown_installed)
