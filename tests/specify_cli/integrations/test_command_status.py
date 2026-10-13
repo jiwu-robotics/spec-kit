@@ -643,18 +643,19 @@ class TestIntegrationStatus:
         assert first_rel in payload["manifests"]["copilot"]["invalid_files"]
         assert first_rel not in payload["manifests"]["copilot"]["modified_files"]
 
-    def test_status_reports_unsafe_multi_install_combination(self, copilot_project):
+    def test_status_reports_unsafe_multi_install_combination(self, tmp_path):
+        project = _init_project(tmp_path, "copilot", "--commands")
         from specify_cli.integrations.manifest import IntegrationManifest
 
-        state_path = copilot_project / ".specify" / "integration.json"
+        state_path = project / ".specify" / "integration.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["installed_integrations"] = ["copilot", "claude"]
         state["default_integration"] = "copilot"
         state["integration"] = "copilot"
         state_path.write_text(json.dumps(state), encoding="utf-8")
-        IntegrationManifest("claude", copilot_project, version="test").save()
+        IntegrationManifest("claude", project, version="test").save()
 
-        result = _run_in_project(copilot_project, ["integration", "status"])
+        result = _run_in_project(project, ["integration", "status"])
 
         assert result.exit_code != 0
         assert "unsafe-multi-install" in result.output

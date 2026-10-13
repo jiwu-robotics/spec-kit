@@ -93,7 +93,7 @@ class TestIntegrationInstall:
         assert "specify integration upgrade codex" in normalized
         assert "specify integration uninstall codex" not in normalized
 
-    def test_install_different_when_one_exists(self, tmp_path):
+    def test_install_different_when_copilot_skills_exist(self, tmp_path):
         project = _init_project(tmp_path, "copilot")
         old_cwd = os.getcwd()
         try:
@@ -101,15 +101,15 @@ class TestIntegrationInstall:
             result = runner.invoke(app, ["integration", "install", "claude"])
         finally:
             os.chdir(old_cwd)
-        assert result.exit_code != 0
-        plain = strip_ansi(result.output)
-        assert "Installed integrations: copilot" in plain
-        assert "Default integration: copilot" in plain
-        normalized = " ".join(plain.split())
-        assert "To replace the default integration" in normalized
-        assert "specify integration switch claude" in normalized
-        assert "To install 'claude' alongside" in normalized
-        assert "retry the same install command with --force" in normalized
+        assert result.exit_code == 0, result.output
+
+        data = json.loads((project / ".specify" / "integration.json").read_text(encoding="utf-8"))
+        assert data["installed_integrations"] == ["copilot", "claude"]
+        assert data["default_integration"] == "copilot"
+
+        status = _run_in_project(project, ["integration", "status"])
+        assert status.exit_code == 0, status.output
+        assert "Integration status: OK" in status.output
 
     def test_install_multi_safe_integration(self, tmp_path):
         project = _init_project(tmp_path, "claude")
@@ -204,7 +204,7 @@ class TestIntegrationInstall:
         assert data["installed_integrations"] == ["claude", "codex"]
 
     def test_install_multi_unsafe_requires_force(self, tmp_path):
-        project = _init_project(tmp_path, "copilot")
+        project = _init_project(tmp_path, "copilot", "--commands")
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
@@ -225,7 +225,7 @@ class TestIntegrationInstall:
         assert "retry the same install command with --force" in normalized
 
     def test_install_multi_unsafe_allowed_with_force(self, tmp_path):
-        project = _init_project(tmp_path, "copilot")
+        project = _init_project(tmp_path, "copilot", "--commands")
         old_cwd = os.getcwd()
         try:
             os.chdir(project)

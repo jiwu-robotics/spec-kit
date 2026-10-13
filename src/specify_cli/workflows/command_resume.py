@@ -12,6 +12,11 @@ def workflow_resume(
     input_values: list[str] | None = cli.typer.Option(
         None, "--input", "-i", help="Updated input values as key=value pairs"
     ),
+    stale_recovery_reason: str | None = cli.typer.Option(
+        None,
+        "--recover-stale-lease",
+        help="Explicit reason to reclaim an expired owner and resume a running run.",
+    ),
     json_output: bool = cli.typer.Option(
         False,
         "--json",
@@ -89,7 +94,14 @@ def workflow_resume(
 
     try:
         with cli._stdout_to_stderr_when(json_output):
-            state = engine.resume(run_id, inputs or None)
+            if stale_recovery_reason:
+                state = engine.resume(
+                    run_id,
+                    inputs or None,
+                    stale_recovery_reason=stale_recovery_reason,
+                )
+            else:
+                state = engine.resume(run_id, inputs or None)
     except FileNotFoundError as exc:
         if engine._execution_state.get() is not None:
             cli._fail_workflow_execution(

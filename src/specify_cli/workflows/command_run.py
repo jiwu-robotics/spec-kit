@@ -12,6 +12,11 @@ def workflow_run(
     input_values: list[str] | None = cli.typer.Option(
         None, "--input", "-i", help="Input values as key=value pairs"
     ),
+    stale_recovery_reason: str | None = cli.typer.Option(
+        None,
+        "--recover-stale-lease",
+        help="Explicit reason to reclaim an expired run lease.",
+    ),
     json_output: bool = cli.typer.Option(
         False,
         "--json",
@@ -150,6 +155,7 @@ def workflow_run(
                     )
                     else None
                 ),
+                stale_recovery_reason=stale_recovery_reason,
             )
     except IntegrationInstallError as exc:
         execution_state = engine._execution_state.get()
